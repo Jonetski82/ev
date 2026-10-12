@@ -1,10 +1,10 @@
-# EV-loki (testiversio, versio 1.0)
+# EV-loki (testiversio, versio 1.0.1)
 
 Sähköauton ajo-, lataus- ja kantamaloki. Popcorn Fuel Login (veneversio 5.2) testiversio: sama kulutusmalli, GPS-kirjaus, arviopisteet ja ehdotusten hyväksyntä, mutta yksiköt ovat km/h, km ja kWh/100 km ja kahden tankin tilalla on yksi akku (varaus %).
 
 ## Käyttöönotto
 1. Luo GitHubiin uusi repository, esim. `ev-loki` (Public).
-2. Lataa tämän paketin kaikki tiedostot ja kansiot repositorion juureen (Add file → Upload files) ja tee Commit.
+2. Lataa tämän paketin kaikki tiedostot repositorion juureen (Add file → Upload files) ja tee Commit. Paketissa ei ole alikansioita, joten sen voi ladata myös iPhonella.
 3. Settings → Pages → Source: Deploy from a branch, Branch: `main`, kansio `/ (root)` → Save.
 4. Avaa puhelimella `https://<käyttäjätunnus>.github.io/ev-loki/` ja lisää aloitusnäyttöön.
 

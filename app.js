@@ -763,7 +763,7 @@
         <div class="btnrow" style="padding:0"><button class="btn small grow" data-act="export">Export backup</button><label class="btn small grow" for="importf">Import backup</label><input type="file" id="importf" accept="application/json,.json" style="display:none" data-act="import"></div>
       </div>
       <div class="btnrow"><button class="btn small grow" data-act="check-update">Check for app update</button></div>
-      <div class="note">EV log 1.0 — test version of the Popcorn Fuel Log · Charging stations © OpenStreetMap contributors · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
+      <div class="note">EV log 1.0.1 — test version of the Popcorn Fuel Log · Charging stations © OpenStreetMap contributors · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
   };
 
   function loadSheet() {

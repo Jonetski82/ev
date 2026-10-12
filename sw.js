@@ -1,12 +1,9 @@
 // Service worker: app shell offline + map tile cache.
-const APP_CACHE = 'evlog-app-v1';
+const APP_CACHE = 'evlog-app-v2';
 const TILE_CACHE = 'evlog-tiles-v1';
 const APP_FILES = [
   './', './index.html', './styles.css', './core.js', './wind.js', './i18n.js', './app.js', './manifest.webmanifest',
-  './vendor/leaflet.js', './vendor/leaflet.css',
-  './vendor/images/layers.png', './vendor/images/layers-2x.png',
-  './vendor/images/marker-icon.png', './vendor/images/marker-icon-2x.png', './vendor/images/marker-shadow.png',
-  './icons/icon-192.png', './icons/icon-512.png'
+  './leaflet.js', './leaflet.css', './icon-192.png', './icon-512.png'
 ];
 const TILE_HOSTS = ['julkinen.traficom.fi', 'tile.openstreetmap.org', 'tiles.openseamap.org', 'avoin-karttakuva.maanmittauslaitos.fi'];
 
