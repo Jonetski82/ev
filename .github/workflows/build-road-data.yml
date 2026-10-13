@@ -1,0 +1,35 @@
+name: Build road data
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install osmium-tool
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+      - name: Download OpenStreetMap Finland
+        run: curl -L --fail --retry 3 -o finland.osm.pbf https://download.geofabrik.de/europe/finland-latest.osm.pbf
+      - name: Keep main roads
+        run: |
+          osmium tags-filter finland.osm.pbf w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link -o roads.osm.pbf
+          osmium cat roads.osm.pbf -f opl,add_metadata=false -o roads.opl
+          ls -lh roads.osm.pbf roads.opl
+      - name: Build road network
+        run: python build_road_data.py --opl roads.opl --out roads
+      - name: Commit road data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add roads
+          git commit -m "Update road data $(date -u +%Y-%m-%d)" || echo "No changes"
+          git push
