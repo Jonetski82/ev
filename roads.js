@@ -43,12 +43,12 @@ const Roads = (() => {
     if (!(await init())) throw new Error('could not load the downloaded road data');
     return meta;
   }
-  // range along roads: budget kWh, kwhKm[speed] table; returns { maxOne, maxRound, pieces Float32Array }
+  // range along roads: budget kWh, kwhKm[speed] table; returns { maxOne, maxRound, zones: { half, one } }
   async function compute(lat, lon, budget, kwhKm, winter) {
     await init(); if (!meta) return { error: 'nodata' };
     const s = await call('search', { lat, lon, budget, kwhKm, winter });
     if (s.error) return s;
-    s.pieces = await call('pieces');
+    s.zones = await call('zones');
     return s;
   }
   return {

@@ -608,11 +608,12 @@ const Core = (() => {
     (S.stationPrices[id] = S.stationPrices[id] || []).push({ t: t || Date.now(), price, src, litres: litres || null });
     save();
   }
-  function addUserStation(lat, lon, name) {
+  function addUserStation(lat, lon, name, plugs) {
     S.userStations = S.userStations || [];
-    const st = { id: 'user:' + uid(), lat: +lat.toFixed(6), lon: +lon.toFixed(6), name: name || 'My fuel station', operator: '', fuels: [], hours: '', user: true };
+    const st = { id: 'user:' + uid(), lat: +lat.toFixed(6), lon: +lon.toFixed(6), name: name || 'My charging station', operator: '', plugs: plugs || [], hours: '', user: true };
     S.userStations.push(st); save(); return st;
   }
+  function updateUserStation(id, patch) { const st = (S.userStations || []).find((x) => x.id === id); if (!st) return null; Object.assign(st, patch); save(); return st; }
   function deleteUserStation(id) { S.userStations = (S.userStations || []).filter((s) => s.id !== id); save(); }
   // dips made before this app version have no kind: a dip after a trip ended (within 6 h, first dip of that tank since) counts as "after"
   function dipKind(e) {
@@ -841,6 +842,6 @@ const Core = (() => {
     lphEng, lphTotal, lpnm, lphSigma, lpnmSigma, lphX, baseLph, consSuggestions, cfEval, acceptCons, rejectCons, setConsBase, setConsIdle, floorOf, restoreCons, addConsPoint, updateConsPoint, deleteConsPoint, findConsPoint, economy, range, tripFuel, tripFuelTotal, tripMeasured,
     addDip, addRefuel, deleteEvent, dipKind, needsPreDip, summary, seasons,
     startTrip, stopTrip, startIdle, stopIdle, idleNow, addIdle, updateIdle, setPaused, setMode, setRpm, resumeIfActive, activeTrack, trackGet, deleteTrip,
-    exportAll, importAll, addManualTrip, updateManualTrip, kvGet, kvSet, addStationPrice, addUserStation, deleteUserStation, setTripLoad, setTripWind, condFactor, loadFactor, _onFix: (p) => onFix(p)
+    exportAll, importAll, addManualTrip, updateManualTrip, kvGet, kvSet, addStationPrice, addUserStation, updateUserStation, deleteUserStation, setTripLoad, setTripWind, condFactor, loadFactor, _onFix: (p) => onFix(p)
   };
 })();

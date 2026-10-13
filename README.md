@@ -1,4 +1,4 @@
-# EV-loki (testiversio, versio 1.4)
+# EV-loki (testiversio, versio 1.5)
 
 Sähköauton ajo-, lataus- ja kantamaloki. Popcorn Fuel Login (veneversio 5.2) testiversio: sama kulutusmalli, GPS-kirjaus, arviopisteet ja ehdotusten hyväksyntä, mutta yksiköt ovat km/h, km ja kWh/100 km ja kahden tankin tilalla on yksi akku (varaus %).
 
@@ -15,7 +15,7 @@ Veneversio ja EV-loki voivat olla samassa puhelimessa: niillä on omat tietokann
 - **Ajo**: Aloita ajo → (varaus ennen ajoa) → kuorma. Lopeta ajo → kirjaa varaus % auton näytöltä.
 - **Lataus**: varaus ennen ja jälkeen, laturin kWh (valinnainen) ja hinta; paikka Koti tai Latausasema. Lataushäviö lasketaan latauksista.
 - **Kulutus**: arviopisteet (km/h → kWh/100 km), sivulaitekuorma (kW), ehdotetut sovitteet; mittauksista tulee ehdotus "Parannettu kulutuskäyrä saatavilla", joka otetaan käyttöön hyväksymällä.
-- **Kantama**: tieverkkoa pitkin lämpöhehkuna (versio 1.4) tai ympyränä; latausasemat OpenStreetMapista 100 km:n säteeltä.
+- **Kantama**: tieverkkoa pitkin vyöhykkeinä tai ympyränä; latausasemat OpenStreetMapista 100 km:n säteeltä, suodatus pistoketyypin mukaan.
 - Tuulikerroin (Ilmatieteen laitos) ja kuormakerroin opitaan kuten veneessä. Lämpötilaa ei ole mallissa.
 
 ## Versio 1.1
@@ -35,6 +35,11 @@ Veneversio ja EV-loki voivat olla samassa puhelimessa: niillä on omat tietokann
 - Talvirajoitukset: 120 → 100 ja 100 → 80 km/h. Oletuksena päivämäärän mukaan (25.10.–31.3.), Lisää-sivulla voi pakottaa Kesä/Talvi.
 - Kartan napautus: reitti teitä pitkin katkoviivana, km ja kWh. Latausaseman kortissa matka teitä pitkin.
 - Tieaineisto (moottoritiet–yhdystiet, OpenStreetMap): rakennetaan GitHubissa "Build road data" -työnkululla kansioon `roads/` ja ladataan sovellukseen kerran (Lisää → Tieaineisto kantamaan → Lataa). Toimii sen jälkeen ilman verkkoa. Ilman aineistoa näytetään ympyrä.
+
+### Versio 1.5
+- Hehku korvattu kahdella vyöhykkeellä: vihreä = riittää sinne ja takaisin, oranssi = vain yhteen suuntaan. Raja kulkee n. 1,5 km uloimpien saavutettavien teiden ulkopuolella; alle 4 km:n aukot ja vyöhykkeen sisäiset järvet täytetään.
+- Latausasemien suodatus pistoketyypin mukaan (Type 2, CCS, CHAdeMO, Tesla, Tuntematon / muu) Kantama-sivun Latausasemat-kortissa; asema näkyy, jos sillä on yksikin valittu pistoke. Valinta muistetaan.
+- Omille asemille valitaan pistokkeet lisättäessä, ja oman aseman voi muokata (nimi, pistokkeet).
 
 ### Tieaineiston rakentaminen (kerran, ja halutessa esim. kerran vuodessa uudelleen)
 1. Repositoriossa: Settings → Actions → General → Workflow permissions → **Read and write permissions** → Save.

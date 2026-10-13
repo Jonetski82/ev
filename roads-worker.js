@@ -126,6 +126,106 @@ function pieces() {
   }
   return new Float32Array(out);
 }
+// chamfer distance (in cells) to the nearest set cell: two passes, O(cells)
+function chamfer(a, W, H) {
+  const n = W * H, d = new Float32Array(n), D2 = Math.SQRT2;
+  for (let i = 0; i < n; i++) d[i] = a[i] ? 0 : 1e9;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x; let v = d[i]; if (v === 0) continue;
+      if (x > 0 && d[i - 1] + 1 < v) v = d[i - 1] + 1;
+      if (y > 0) { if (d[i - W] + 1 < v) v = d[i - W] + 1; if (x > 0 && d[i - W - 1] + D2 < v) v = d[i - W - 1] + D2; if (x < W - 1 && d[i - W + 1] + D2 < v) v = d[i - W + 1] + D2; }
+      d[i] = v;
+    }
+  }
+  for (let y = H - 1; y >= 0; y--) {
+    for (let x = W - 1; x >= 0; x--) {
+      const i = y * W + x; let v = d[i]; if (v === 0) continue;
+      if (x < W - 1 && d[i + 1] + 1 < v) v = d[i + 1] + 1;
+      if (y < H - 1) { if (d[i + W] + 1 < v) v = d[i + W] + 1; if (x < W - 1 && d[i + W + 1] + D2 < v) v = d[i + W + 1] + D2; if (x > 0 && d[i + W - 1] + D2 < v) v = d[i + W - 1] + D2; }
+      d[i] = v;
+    }
+  }
+  return d;
+}
+// zone outline from road pieces [lat1,lon1,lat2,lon2,r,...] with r >= minR:
+// grid → closing (bridges gaps under closeKm, leaves padKm around the outermost roads) → hole fill → blur → marching squares → smoothed rings [[lat, lon], ...]
+function outline(p, minR, cellKm, closeKm, padKm) {
+  let la0 = 90, la1 = -90, lo0 = 180, lo1 = -180, any = false;
+  for (let i = 0; i < p.length; i += 5) {
+    if (p[i + 4] < minR) continue; any = true;
+    const a = p[i], b = p[i + 2], c = p[i + 1], d = p[i + 3];
+    if (a < la0) la0 = a; if (b < la0) la0 = b; if (a > la1) la1 = a; if (b > la1) la1 = b;
+    if (c < lo0) lo0 = c; if (d < lo0) lo0 = d; if (c > lo1) lo1 = c; if (d > lo1) lo1 = d;
+  }
+  if (!any) return [];
+  const dla = cellKm / 110.574, dlo = cellKm / (111.32 * Math.cos(((la0 + la1) / 2) * Math.PI / 180));
+  const R = Math.ceil((closeKm + padKm) / cellKm) + 3;
+  const W = Math.ceil((lo1 - lo0) / dlo) + 2 * R + 1, H = Math.ceil((la1 - la0) / dla) + 2 * R + 1;
+  const ox = lo0 - R * dlo, oy = la0 - R * dla;
+  let g = new Uint8Array(W * H);
+  for (let i = 0; i < p.length; i += 5) {
+    if (p[i + 4] < minR) continue;
+    const n = Math.max(1, Math.ceil(Math.hypot((p[i + 2] - p[i]) / dla, (p[i + 3] - p[i + 1]) / dlo) * 2));
+    const y0 = (p[i] - oy) / dla, x0 = (p[i + 1] - ox) / dlo, sy = ((p[i + 2] - oy) / dla - y0) / n, sx = ((p[i + 3] - ox) / dlo - x0) / n;
+    for (let k = 0; k <= n; k++) g[Math.round(y0 + sy * k) * W + Math.round(x0 + sx * k)] = 1;
+  }
+  const dist = (a) => chamfer(a, W, H);
+  const rc = closeKm / cellKm, rp = padKm / cellKm;
+  const d1 = dist(g), grown = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) grown[i] = d1[i] <= rc + rp ? 1 : 0;
+  const outside = new Uint8Array(W * H); for (let i = 0; i < W * H; i++) outside[i] = 1 - grown[i];
+  const d2 = dist(outside);
+  for (let i = 0; i < W * H; i++) g[i] = d2[i] > rc ? 1 : 0;   // closing: grow by close + pad, shrink back by close
+  // fill holes: flood the outside from the border (queue in a typed array)
+  const N2 = W * H, out = new Uint8Array(N2), q = new Int32Array(N2); let qh = 0, qt = 0;
+  const seed = (i) => { if (!out[i] && !g[i]) { out[i] = 1; q[qt++] = i; } };
+  for (let x = 0; x < W; x++) { seed(x); seed((H - 1) * W + x); } for (let y = 0; y < H; y++) { seed(y * W); seed(y * W + W - 1); }
+  while (qh < qt) { const i = q[qh++], x = i % W; if (x > 0) seed(i - 1); if (x < W - 1) seed(i + 1); if (i >= W) seed(i - W); if (i < N2 - W) seed(i + W); }
+  // soft field (separable 3-box blur twice) for a smooth contour
+  let f = new Float32Array(N2); for (let i = 0; i < N2; i++) f[i] = out[i] ? 0 : 1;
+  for (let it = 0; it < 2; it++) {
+    const h = new Float32Array(N2), v = new Float32Array(N2);
+    for (let y = 0; y < H; y++) for (let x = 1; x < W - 1; x++) { const i = y * W + x; h[i] = (f[i - 1] + f[i] + f[i + 1]) / 3; }
+    for (let y = 1; y < H - 1; y++) for (let x = 0; x < W; x++) { const i = y * W + x; v[i] = (h[i - W] + h[i] + h[i + W]) / 3; }
+    f = v;
+  }
+  // marching squares at 0.5; edge ids: 2·(y·W + x) for the edge right of corner (x, y), +1 for the edge below it
+  const PX = new Float64Array(2 * N2), PY = new Float64Array(2 * N2), L1 = new Int32Array(2 * N2).fill(-1), L2 = new Int32Array(2 * N2).fill(-1);
+  const E = (x, y, v) => {
+    const id = 2 * (y * W + x) + v, a = f[y * W + x], b = v ? f[(y + 1) * W + x] : f[y * W + x + 1], t = (0.5 - a) / (b - a);
+    PX[id] = v ? x : x + t; PY[id] = v ? y + t : y; return id;
+  };
+  const link = (a, b) => { if (L1[a] < 0) L1[a] = b; else L2[a] = b; if (L1[b] < 0) L1[b] = a; else L2[b] = a; };
+  const T = [null, [[3, 0]], [[0, 1]], [[3, 1]], [[1, 2]], [[3, 2], [0, 1]], [[0, 2]], [[3, 2]], [[2, 3]], [[2, 0]], [[3, 0], [1, 2]], [[2, 1]], [[1, 3]], [[1, 0]], [[0, 3]], null];
+  const starts = [];
+  for (let y = 0; y < H - 1; y++) for (let x = 0; x < W - 1; x++) {
+    const i = y * W + x, c = (f[i] > 0.5) | ((f[i + 1] > 0.5) << 1) | ((f[i + W + 1] > 0.5) << 2) | ((f[i + W] > 0.5) << 3);
+    if (!T[c]) continue;
+    const e = [E(x, y, 0), E(x + 1, y, 1), E(x, y + 1, 0), E(x, y, 1)];   // bottom, right, top, left
+    for (const [u, w] of T[c]) { link(e[u], e[w]); starts.push(e[u]); }
+  }
+  const used = new Uint8Array(2 * N2), rings = [];
+  for (const k0 of starts) {
+    if (used[k0]) continue;
+    const ring = []; let prev = -1, k = k0;
+    while (k >= 0 && !used[k]) { used[k] = 1; ring.push([oy + PY[k] * dla, ox + PX[k] * dlo]); const n = L1[k] !== prev && !used[L1[k]] ? L1[k] : L2[k] !== prev && L2[k] >= 0 && !used[L2[k]] ? L2[k] : -1; prev = k; k = n; }
+    if (ring.length > 8) rings.push(ring);
+  }
+  // Chaikin smoothing
+  return rings.map((r) => { let q = r; for (let it = 0; it < 2; it++) { const o = []; for (let i = 0; i < q.length; i++) { const a = q[i], b = q[(i + 1) % q.length]; o.push([a[0] * .75 + b[0] * .25, a[1] * .75 + b[1] * .25], [a[0] * .25 + b[0] * .75, a[1] * .25 + b[1] * .75]); } q = o; } return q; });
+}
+// both zones of the last search: half = enough to come back, one = one way
+function zones() {
+  if (!last) return null;
+  const p = pieces();
+  let la0 = 90, la1 = -90, lo0 = 180, lo1 = -180;
+  for (let i = 0; i < p.length; i += 5) { la0 = Math.min(la0, p[i], p[i + 2]); la1 = Math.max(la1, p[i], p[i + 2]); lo0 = Math.min(lo0, p[i + 1], p[i + 3]); lo1 = Math.max(lo1, p[i + 1], p[i + 3]); }
+  if (!p.length) return { half: [], one: [] };
+  const areaKm2 = (la1 - la0) * 110.574 * (lo1 - lo0) * 111.32 * Math.cos(((la0 + la1) / 2) * Math.PI / 180);
+  const cell = Math.max(0.7, Math.sqrt(areaKm2 / 250000));   // keeps the grid at about 250 000 cells or less
+  return { half: outline(p, 0.5, cell, 4, 1.5), one: outline(p, 0, cell, 4, 1.5), cellKm: cell };
+}
 function pathTo(n) {
   const { prevE, s } = last, pts = []; let guard = 0;
   while (prevE[n] >= 0 && guard++ < 1e6) { const e = prevE[n], p = edgePts(e); const fwd = EB[e] === n; const seq = fwd ? p.slice().reverse() : p; pts.push(...seq.slice(0, -1)); n = fwd ? EA[e] : EB[e]; }
@@ -158,6 +258,7 @@ onmessage = (ev) => {
     if (m.cmd === 'load') res = load(m.meta, m.buf);
     else if (m.cmd === 'search') res = search(m.lat, m.lon, m.budget, m.kwhKm, m.winter);
     else if (m.cmd === 'pieces') { const p = pieces(); postMessage({ id, res: p }, [p.buffer]); return; }
+    else if (m.cmd === 'zones') res = zones();
     else if (m.cmd === 'route') res = route(m.lat, m.lon);
     else if (m.cmd === 'stations') res = stations(m.list);
     postMessage({ id, res });

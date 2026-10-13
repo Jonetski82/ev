@@ -744,44 +744,19 @@
         </div>
         <div class="card"><div class="cardhead"><div class="h">Charging stations</div><div class="sub" id="ch-count"></div></div>
           <div class="sub">From OpenStreetMap, within 100 km of the start point. Tap a pin for the distance and the energy needed.</div>
+          <div class="optrow"><span class="lbl">Plugs</span><div class="chips" id="plug-chips"></div></div>
           <button class="btn small dark" data-act="fuel-update">Load charging stations</button><div class="sub" id="fuel-out"></div></div>
         <div class="note" id="range-note"></div>`;
       getMap('range').on('click', rangeTap).on('contextmenu', (ev) => setRangeStart(ev.latlng.lat, ev.latlng.lng)); rangeBuilt = true;
     }
     renderRange();
   };
-  // ---- range along roads: heat glow, green (enough to come back) → yellow (turn back) → red (one way only) ----
+  // ---- range along roads: two zones, green = enough to come back, orange = one way only ----
   const winterNow = () => { const m = S().settings.speedSeason || 'auto'; if (m !== 'auto') return m === 'winter'; const d = new Date(), mo = d.getMonth(); return mo >= 10 || mo <= 2 || (mo === 9 && d.getDate() >= 25); };
-  const HEAT = (r) => { const mix = (a, b, t) => { const A = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16)), B = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16)); return 'rgb(' + A.map((x, i) => Math.round(x + (B[i] - x) * t)).join(',') + ')'; };
-    const stops = [[0, '#E0352B'], [0.35, '#F08A2C'], [0.47, '#F2C230'], [0.56, '#F2C230'], [0.66, '#5DC26A'], [1, '#169C62']];   // green = enough to come back
-    r = Math.max(0, Math.min(1, r)); let k = 1; while (k < stops.length - 1 && r > stops[k][0]) k++;
-    const [a, ca] = stops[k - 1], [b, cb] = stops[k]; return mix(ca, cb, b > a ? (r - a) / (b - a) : 0); };
-  const GlowLayer = L.Layer.extend({
-    initialize(p) { this.p = p; this.buckets = Array.from({ length: 16 }, () => []); for (let i = 0; i < p.length; i += 5) this.buckets[Math.max(0, Math.min(15, Math.floor(p[i + 4] * 16)))].push(i); },
-    onAdd(map) { this._map = map; this._c = L.DomUtil.create('canvas', 'glow-canvas', map.getPane('overlayPane')); map.on('moveend zoomend resize viewreset', this._draw, this); map.on('zoomstart', this._hide, this); this._draw(); },
-    onRemove(map) { L.DomUtil.remove(this._c); map.off('moveend zoomend resize viewreset', this._draw, this); map.off('zoomstart', this._hide, this); },
-    _hide() { this._c.style.display = 'none'; },
-    _draw() {
-      const m = this._map, sz = m.getSize(), c = this._c, dpr = Math.min(2, window.devicePixelRatio || 1), p = this.p;
-      c.width = sz.x * dpr; c.height = sz.y * dpr; c.style.width = sz.x + 'px'; c.style.height = sz.y + 'px';
-      L.DomUtil.setPosition(c, m.containerPointToLayerPoint([0, 0]));
-      const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(6, Math.min(26, 6 + (m.getZoom() - 7) * 4)); ctx.globalAlpha = 0.85;
-      const o = m.containerPointToLayerPoint([0, 0]), pr = (la, lo) => m.latLngToLayerPoint([la, lo]).subtract(o);
-      this.buckets.forEach((list, k) => {   // red first, green last: the colour near the start stays on top
-        if (!list.length) return;
-        ctx.strokeStyle = HEAT((k + 0.5) / 16); ctx.beginPath();
-        list.forEach((i) => { const a = pr(p[i], p[i + 1]), b = pr(p[i + 2], p[i + 3]); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); });
-        ctx.stroke();
-      });
-      c.style.display = '';
-    }
-  });
-  let glow = null, roadsRes = null, roadRoute = null, roadsToken = 0;
+  let roadsRes = null, roadRoute = null, roadsToken = 0;
   const kwhKmTable = () => { const lf = Core.loadFactor(S().active ? S().active.load : S().settings.lastLoad); return Array.from({ length: 161 }, (_, v) => (Core.lphTotal('both', Math.max(5, v)) / Math.max(5, v)) * lf); };
   async function renderRoads(c) {
     const m = maps.range, u = Core.usable('bat'), tk = ++roadsToken;
-    if (glow) { m.removeLayer(glow); glow = null; }
     setRangeStatus('Calculating along roads…');
     const res = await Roads.compute(c[0], c[1], u.usable, kwhKmTable(), winterNow());
     if (tk !== roadsToken) return;
@@ -791,10 +766,14 @@
       $('#range-dyn').insertAdjacentHTML('beforeend', `<div class="warn">${res.error === 'nodata' ? 'No road data yet: More → Road data for range → Download. Showing the straight-line circle.' : 'No road within 5 km of the start point. Showing the straight-line circle.'}</div>`);
       return;
     }
-    glow = new GlowLayer(res.pieces).addTo(m);
+    const z = res.zones || { one: [], half: [] };
+    let bounds = null;
+    if (z.one.length) { const pg = L.polygon(z.one, { color: '#D8572A', weight: 1.5, fillColor: '#F08A2C', fillOpacity: 0.2, interactive: false }).addTo(m._over); bounds = pg.getBounds(); }
+    if (z.half.length) L.polygon(z.half, { color: '#169C62', weight: 1.5, fillColor: '#22B573', fillOpacity: 0.28, interactive: false }).addTo(m._over);
+    if (bounds && m._roadsFitted !== c.join()) { m.invalidateSize(); m.fitBounds(bounds, { padding: [8, 8], animate: false }); m._roadsFitted = c.join(); }
     const one = res.maxOne, round = res.maxRound;
     $('#range-dyn').innerHTML = `<div class="card dark" style="margin-top:4px"><div class="cardhead"><div><div class="sub">${rangeMode === 'round' ? 'Turn back before' : 'Reach'}</div><div class="num" style="font-size:30px">${fi(rangeMode === 'round' ? round : one)} km</div><div class="sub">along roads, energy road by road</div></div><div style="text-align:right;max-width:170px" class="sub">down to ${fi(BAT().pipeMm)} % charge<br>${winterNow() ? 'winter speed limits' : 'summer speed limits'}</div></div></div>`;
-    setRangeStatus(`green = enough to come back · yellow = turn back · red = one way only · ${f(res.ms / 1000)} s`);
+    setRangeStatus('green = enough to come back · orange = one way only');
     if (openStation) stationCard(openStation);
   }
   function renderRange() {
@@ -815,18 +794,18 @@
       <div class="card dark" style="margin-top:4px"><div class="cardhead"><div><div class="sub">${rangeMode === 'round' ? 'Turn back before' : 'Reach'}</div><div class="num" style="font-size:30px">${fi(nmv(r))} km</div><div class="sub">${per100(r.lpnm)} kWh/100 km at ${fi(kmh)} km/h</div></div><div style="text-align:right;max-width:170px" class="sub">down to ${fi(BAT().pipeMm)} % charge<br>Dashed: ${fi(nmv(r2))} km at ${fi(alt)} km/h</div></div></div>`;
     $('#range-note').textContent = area === 'roads' ? 'Each road is driven at its speed limit with your learned consumption at that speed. Routes are the fastest ones, as a navigator would choose. Planning aid only — cold, wind, hills, heating and traffic add to consumption.' : 'Range is shown as a straight-line circle; roads are longer, typically by 20–40 %. Planning aid only — cold, wind, hills and heating add to consumption.';
     const m = maps.range; m._over.clearLayers(); clearRoute();
-    if (glow) { m.removeLayer(glow); glow = null; } roadsRes = null;
+    roadsRes = null;
     const man = s.settings.rangeStart;
     const c = man ? [man.lat, man.lon] : lv.fix ? [lv.fix.lat, lv.fix.lon] : null;
     $('#range-start').innerHTML = `<button class="chip ${man ? '' : 'on'}" data-act="range-start-gps">${lv.fix ? 'Car (GPS)' : 'GPS – no position'}</button>
       ${man ? '<button class="chip on" data-act="range-start-gps">Chosen point ✕</button>' : '<span class="sub" style="align-self:center">or long-press the map</span>'}`;
     rangeCtx = { r, r2, kmh, c, nmv };
     drawStations();
-    $('#ch-count').textContent = allStations().length + ' on the map';
+    renderPlugChips();
     if (!r) return;
     if (!c) { setRangeStatus('No GPS position. Long-press the map (or tap it and choose "Start from here") to set a start point.'); return; }
     L.marker(c, { icon: man ? startIcon() : carIcon(lv.fix ? lv.fix.heading || 0 : 0), interactive: false, zIndexOffset: 1000 }).addTo(m._over);
-    if (area === 'roads') { m.invalidateSize(); if (!m._roadsFitted || m._roadsFitted !== c.join()) { m.fitBounds(L.latLng(c).toBounds(Math.max(20, nmv(r)) * 1000 * 1.3)); m._roadsFitted = c.join(); } renderRoads(c); return; }
+    if (area === 'roads') { m.invalidateSize(); if (m._roadsFitted !== c.join()) m.fitBounds(L.latLng(c).toBounds(Math.max(20, r.oneWay) * 1000 * 2.2), { animate: false }); renderRoads(c); return; }
     drawCircle(rangeCtx);
   }
   function drawCircle({ r, r2, c, nmv }) {
@@ -839,6 +818,32 @@
   // charging stations: OpenStreetMap (fetched on this phone) + your own
   let chargers = [];
   const allStations = () => chargers.concat(S().userStations || []);
+  // plug types: from OpenStreetMap socket:* tags (stored as text) or chosen for your own stations
+  const PLUGS = [['type2', 'Type 2 (AC)'], ['ccs', 'CCS (DC)'], ['chademo', 'CHAdeMO'], ['tesla', 'Tesla'], ['other', 'Unknown / other']];
+  const plugName = (k) => (PLUGS.find((p) => p[0] === k) || [k, k])[1];
+  function plugsOf(st) {
+    if (st.user) return st.plugs && st.plugs.length ? st.plugs : ['other'];
+    if (st._plugs) return st._plugs;
+    const set = new Set();
+    String(st.sockets || '').split(',').map((x) => x.replace(/×\s*\d+/, '').trim().toLowerCase()).filter(Boolean).forEach((n) => {
+      if (/combo|ccs/.test(n)) set.add('ccs');
+      if (/^tesla/.test(n)) set.add('tesla');
+      if (/^chademo/.test(n)) set.add('chademo');
+      if (/^type2( cable)?$/.test(n) || n === 'type2 socket') set.add('type2');
+      if (!/combo|ccs|^tesla|^chademo|^type2( cable| socket)?$/.test(n)) set.add('other');
+    });
+    return (st._plugs = set.size ? [...set] : ['other']);
+  }
+  const plugHidden = () => new Set(S().settings.plugHide || []);
+  const stationShown = (st) => { const h = plugHidden(); return plugsOf(st).some((p) => !h.has(p)); };
+  const shownStations = () => allStations().filter(stationShown);
+  function renderPlugChips() {
+    const el = $('#plug-chips'); if (!el) return;
+    const all = allStations(), h = plugHidden();
+    el.innerHTML = PLUGS.map(([k, l]) => `<button class="chip ${h.has(k) ? '' : 'on'}" data-act="plug" data-p="${k}">${l}<span class="cnt">${all.filter((st) => plugsOf(st).includes(k)).length}</span></button>`).join('');
+    const n = shownStations().length;
+    $('#ch-count').textContent = n === all.length ? all.length + ' on the map' : n + ' / ' + all.length + ' on the map';
+  }
   const lastPrice = (id) => { const p = (S().stationPrices || {})[id]; return p && p.length ? p[p.length - 1] : null; };
   const ageTxt = (t) => { const d = (Date.now() - t) / 86400000; return d < 1 ? 'today' : d < 14 ? Math.round(d) + ' d ago' : d < 60 ? Math.round(d / 7) + ' wk ago' : Math.round(d / 30) + ' mo ago'; };
   const PLUG = '<path d="M9 3v4M15 3v4M7 7h10v3a5 5 0 0 1-10 0V7ZM12 15v3a3 3 0 0 0 3 3h1" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>';
@@ -855,13 +860,14 @@
     if (stationLayer) m.removeLayer(stationLayer);
     stationLayer = L.layerGroup().addTo(m);
     const z = m.getZoom();
-    allStations().forEach((st) => { const mk = L.marker([st.lat, st.lon], { icon: plugIcon(st, z), title: st.name, zIndexOffset: 500 }).on('click', () => stationCard(st)).addTo(stationLayer); mk._st = st; });
+    shownStations().forEach((st) => { const mk = L.marker([st.lat, st.lon], { icon: plugIcon(st, z), title: st.name, zIndexOffset: 500 }).on('click', () => stationCard(st)).addTo(stationLayer); mk._st = st; });
     if (!m._fuelZoom) { m._fuelZoom = true; m.on('zoomend', () => { if (!stationLayer) return; const zz = m.getZoom(); stationLayer.eachLayer((mk) => mk._st && mk.setIcon(plugIcon(mk._st, zz))); }); }
   }
   function stationCard(st) {
     openStation = st; clearRoute();
     const lp = lastPrice(st.id);
-    const info = [st.operator && st.operator !== st.name ? esc(st.operator) : '', st.sockets ? esc(st.sockets) : '', st.capacity ? esc(st.capacity) + ' places' : ''].filter(Boolean).join(' · ');
+    const info = [st.operator && st.operator !== st.name ? esc(st.operator) : '', st.capacity ? esc(st.capacity) + ' places' : ''].filter(Boolean).join(' · ');
+    const plugs = `<div class="sub">${plugsOf(st).map(plugName).join(' · ')}${!st.user && st.sockets ? ` <span class="sub" data-noi18n style="opacity:.75">(${esc(st.sockets)})</span>` : ''}</div>`;
     const ctx = rangeCtx;
     let dist = '';
     if (roadsRes) {
@@ -878,7 +884,14 @@
     }
     $('#range-route').innerHTML = `<div class="card"><div class="cardhead"><div><div class="h">${esc(st.name)}</div><div class="sub">${info || (st.user ? 'your own station' : 'OpenStreetMap')}</div></div>
       <div style="text-align:right"><div class="num" style="font-size:20px">${lp ? f(lp.price, 3) + ' €/kWh' : '–'}</div><div class="sub">${lp ? (lp.src === 'refuel' ? 'you paid ' : 'seen ') + ageTxt(lp.t) : 'no price yet'}</div></div></div>
-      ${dist}<div class="btnrow" style="padding:0"><button class="btn small grow" data-act="price-seen">Log price seen</button>${st.user ? '<button class="btn small" data-act="del-station">Delete</button>' : ''}</div></div>`;
+      ${plugs}${dist}<div class="btnrow" style="padding:0"><button class="btn small grow" data-act="price-seen">Log price seen</button>${st.user ? '<button class="btn small" data-act="edit-station">Edit</button><button class="btn small" data-act="del-station">Delete</button>' : ''}</div></div>`;
+  }
+  function stationSheet(st) {
+    const has = (k) => st && (st.plugs || []).includes(k);
+    sheet(`<h3>${st ? 'Edit charging station' : 'Add charging station'}</h3>${st ? '' : '<p>A charging station missing from the map, at the point you tapped.</p>'}<div class="card"><div class="field"><label for="ns-n">Name</label><div class="inbox wide" style="width:60%"><input id="ns-n" placeholder="e.g. Work garage" value="${st ? esc(st.name) : ''}"></div></div>
+      <div class="optrow"><span class="lbl">Plugs</span><div class="chips" id="ns-plugs">${PLUGS.filter((p) => p[0] !== 'other').map(([k, l]) => `<button class="chip ${has(k) ? 'on' : ''}" data-act="ns-plug" data-p="${k}">${l}</button>`).join('')}</div></div>
+      <div class="sub">None chosen = Unknown / other.</div></div>
+      <div class="btnrow"><button class="btn grow" data-act="sheet-close">Cancel</button><button class="btn primary" data-act="save-station" ${st ? `data-id="${st.id}"` : ''}>${st ? 'Save' : 'Add'}</button></div>`);
   }
   const startIcon = () => L.divIcon({ className: 'boat-icon', iconSize: [22, 22], iconAnchor: [11, 11], html: '<svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="8" fill="#B8470F" stroke="#fff" stroke-width="3"/><circle r="2.5" fill="#fff"/></svg>' });
   function setRangeStart(lat, lon) { S().settings.rangeStart = { lat: +lat.toFixed(5), lon: +lon.toFixed(5) }; Core.save(); toast('Start point set'); renderRange(); }
@@ -961,7 +974,7 @@
         <div class="btnrow" style="padding:0"><button class="btn small grow" data-act="export">Export backup</button><label class="btn small grow" for="importf">Import backup</label><input type="file" id="importf" accept="application/json,.json" style="display:none" data-act="import"></div>
       </div>
       <div class="btnrow"><button class="btn small grow" data-act="check-update">Check for app update</button></div>
-      <div class="note">EV log 1.4 — test version of the Popcorn Fuel Log · Charging stations and road data © OpenStreetMap contributors (ODbL) · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
+      <div class="note">EV log 1.5 — test version of the Popcorn Fuel Log · Charging stations and road data © OpenStreetMap contributors (ODbL) · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
   };
 
   function loadSheet() {
@@ -1154,11 +1167,21 @@
       setTimeout(() => $('#ps-p').focus(), 100);
     },
     'save-price-seen': () => { const p = Core.num($('#ps-p').value); if (!(p > 0 && p < 3)) return toast('Enter the price in €/kWh'); Core.addStationPrice(openStation.id, p, 'seen'); closeSheet(); toast('Price saved'); drawStations(); stationCard(openStation); },
-    'add-station': () => {
-      if (!lastTap) return;
-      sheet(`<h3>Add charging station</h3><p>A charging station missing from the map, at the point you tapped.</p><div class="card"><div class="field"><label for="ns-n">Name</label><div class="inbox wide" style="width:60%"><input id="ns-n" placeholder="e.g. Work garage"></div></div></div><div class="btnrow"><button class="btn grow" data-act="sheet-close">Cancel</button><button class="btn primary" data-act="save-station">Add</button></div>`);
+    'add-station': () => { if (lastTap) stationSheet(null); },
+    'edit-station': () => { if (openStation && openStation.user) stationSheet(openStation); },
+    'ns-plug': (el) => el.classList.toggle('on'),
+    'save-station': (el) => {
+      const name = $('#ns-n').value.trim() || 'My charging station', plugs = [...document.querySelectorAll('#ns-plugs .chip.on')].map((b) => b.dataset.p);
+      let st;
+      if (el.dataset.id) { st = Core.updateUserStation(el.dataset.id, { name, plugs }); toast('Charging station saved'); }
+      else { st = Core.addUserStation(lastTap.lat, lastTap.lng, name, plugs); toast('Charging station added'); }
+      closeSheet(); drawStations(); renderPlugChips(); if (st) stationCard(st);
     },
-    'save-station': () => { const st = Core.addUserStation(lastTap.lat, lastTap.lng, $('#ns-n').value.trim() || 'My charging station'); closeSheet(); toast('Charging station added'); drawStations(); stationCard(st); },
+    'plug': (el) => {
+      const h = plugHidden(), k = el.dataset.p; h.has(k) ? h.delete(k) : h.add(k);
+      S().settings.plugHide = [...h]; Core.save(); drawStations(); renderPlugChips();
+      if (openStation && !stationShown(openStation)) { openStation = null; clearRoute(); }
+    },
     'del-station': () => confirmSheet('Delete this station?', 'Its price history is kept in backups but the marker is removed.', 'Delete', () => { Core.deleteUserStation(openStation.id); openStation = null; clearRoute(); drawStations(); }),
     'fuel-update': async () => {
       const man = S().settings.rangeStart, fx = Core.live.fix;

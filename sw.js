@@ -1,5 +1,5 @@
 // Service worker: app shell offline + map tile cache.
-const APP_CACHE = 'evlog-app-v6';
+const APP_CACHE = 'evlog-app-v7';
 const TILE_CACHE = 'evlog-tiles-v1';
 const APP_FILES = [
   './', './index.html', './styles.css', './core.js', './wind.js', './i18n.js', './app.js', './roads.js', './roads-worker.js', './manifest.webmanifest',

@@ -702,6 +702,15 @@ const I18N = (() => {
     "Road data ready": "Tieaineisto valmis",
     "Failed: road data not found (HTTP {n}) — run the \"Build road data\" workflow in GitHub first.": "Epäonnistui: tieaineistoa ei löydy (HTTP {n}) — aja ensin GitHubissa \"Build road data\" -työnkulku.",
     "Failed: {x}": "Epäonnistui: {x}",
+    "orange = one way only": "oranssi = vain yhteen suuntaan",
+    "Plugs": "Pistokkeet",
+    "Unknown / other": "Tuntematon / muu",
+    "{n} / {n} on the map": "{n} / {n} kartalla",
+    "Edit charging station": "Muokkaa latausasemaa",
+    "Charging station saved": "Latausasema tallennettu",
+    "None chosen = Unknown / other.": "Ei valintaa = Tuntematon / muu.",
+    "green = enough to come back · orange = one way only": "vihreä = riittää takaisin · oranssi = vain yhteen suuntaan",
+    "Charging stations and road data © OpenStreetMap contributors (ODbL)": "Latausasemat ja tieaineisto © OpenStreetMap-tekijät (ODbL)",
     "{n} %": "{n} %"
   };
 
