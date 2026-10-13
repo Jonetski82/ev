@@ -169,7 +169,8 @@
       <div class="btnrow"><button class="btn" data-act="pause">${A.paused ? 'Resume' : 'Pause'}</button><button class="btn primary" data-act="end-trip">End drive &amp; log charge</button></div>
       <div class="note">Keep the app open on screen while driving: the phone pauses GPS for web apps when the screen is off.</div>`
     : `${warn}
-      <div class="btnrow" style="padding-top:10px"><button class="btn primary" data-act="start-trip">Start drive</button></div>
+      ${idleCard()}
+      <div class="btnrow" style="padding-top:10px"><button class="btn primary grow" data-act="start-trip">Start drive</button>${S().idleRun ? '' : '<button class="btn" data-act="idle-start-sheet">Idle run</button>'}</div>
       ${batteryCard()}
       <div class="card" style="gap:4px">${ecoHtml(true)}</div>
       <div class="sub" style="padding:4px 16px">Drives without GPS (logged afterwards) can be added on the Drives tab.</div>`;
@@ -201,7 +202,36 @@
   }
   let liveTick = 0;
   Core.on(() => { const now = Date.now(); if (now - liveTick > 900) { liveTick = now; updateHelmLive(); } });
-  setInterval(() => { const A = S() && S().active; if (A && current === 'helm') $('#helm-sub').textContent = 'Drive ' + clock(Date.now() - A.start) + (A.paused ? ' · paused' : ''); }, 1000);
+  setInterval(() => {
+    const A = S() && S().active; if (A && current === 'helm') $('#helm-sub').textContent = 'Drive ' + clock(Date.now() - A.start) + (A.paused ? ' · paused' : '');
+    const ir = S() && S().idleRun, el = document.getElementById('h-idle');
+    if (ir && el) { el.textContent = clock(Date.now() - ir.start); const u = document.getElementById('h-idle-used'); if (u) u.textContent = '≈ ' + f(Core.tripFuelTotal(Core.idleNow())) + ' kWh'; }
+  }, 1000);
+  // idle runs: engine (car) on while standing, without GPS — battery charging, heating, air conditioning
+  const idleModeLabel = (m) => '';
+  function idleCard() {
+    const ir = S().idleRun; if (!ir) return '';
+    return `<div class="card dark"><div class="cardhead"><div><div class="h">Idle run (car on, standing)</div><div class="sub">${'since ' + tstr(ir.start)}</div></div><div style="text-align:right"><div class="num" style="font-size:24px" id="h-idle">${clock(Date.now() - ir.start)}</div><div class="sub" id="h-idle-used"></div></div></div>
+      <button class="btn small" style="background:#fff;color:#13212F" data-act="idle-stop">End idle run</button></div>`;
+  }
+  let idleEdit = null, idleMode = 'both';
+  function idleSheet(tr) {
+    idleEdit = tr ? tr.id : null; idleMode = tr ? tr.manual.mode : (S().settings.lastIdleMode || 'both');
+    const h = tr ? Math.floor(tr.hours) : '', mi = tr ? Math.round((tr.hours - Math.floor(tr.hours)) * 60) : '';
+    sheet(`<h3>${tr ? 'Edit idle run' : 'Add idle run'}</h3><p>Car on while standing, e.g. heating or air conditioning.</p>
+      <div class="card">
+        <div class="field"><label for="ir-start">Start<small>date and time</small></label><div class="inbox wide" style="width:58%"><input type="datetime-local" id="ir-start" value="${localInput(tr ? tr.start : Date.now() - 2 * 3600000)}"></div></div>
+        <div class="field"><label for="ir-h">Duration<small>hours and minutes</small></label><div style="display:flex;gap:6px"><div class="inbox" style="width:76px"><input id="ir-h" inputmode="numeric" value="${h}"><span>h</span></div><div class="inbox" style="width:84px"><input id="ir-min" inputmode="numeric" value="${mi}"><span>min</span></div></div></div>
+        
+      </div>
+      <div class="btnrow"><button class="btn grow" data-act="sheet-close">Cancel</button>${tr ? '<button class="btn" data-act="ir-del">Delete</button>' : ''}<button class="btn primary" data-act="ir-save">${tr ? 'Save' : 'Add'}</button></div>`);
+  }
+  function idleLogCard(from, to) {
+    const runs = S().trips.filter((t) => t.idle && t.start >= from && t.start < to).sort((a, b) => b.start - a.start);
+    return `<div class="card" style="gap:0"><div class="cardhead"><div class="h">Idle runs</div><div class="sub">${runs.length} runs · ${dur(runs.reduce((a, t) => a + t.hours, 0))}</div></div>
+      ${runs.length ? runs.map((t) => `<div class="logrow"><button class="main" data-act="ir-edit" data-id="${t.id}" style="border:0;background:transparent;text-align:left;padding:0;font:inherit;color:inherit;cursor:pointer"><b>${dtstr(t.start)}</b><span>${dur(t.hours)}</span></button><div class="right"><span class="num">≈ ${f(Core.tripFuelTotal(t))} kWh</span></div><button class="iconbtn" aria-label="Delete idle run" data-act="ir-del-row" data-id="${t.id}">${IC.x}</button></div>`).join('') : '<div class="sub">No idle runs in this period.</div>'}
+      <div class="btnrow" style="padding:8px 0 0 0"><button class="btn small grow" data-act="ir-add">Add idle run</button></div></div>`;
+  }
 
   // charge-reading input, shared by end of drive and before a drive
   const readingCard = (title) => `<div class="card"><div class="cardhead"><div class="h">${title}</div></div>
@@ -263,7 +293,7 @@
         <div id="trips-dyn"></div>`;
       getMap('trips'); tripsBuilt = true;
     }
-    const trips = s.trips.slice().sort((a, b) => b.start - a.start);
+    const trips = s.trips.filter((t) => !t.idle).sort((a, b) => b.start - a.start);
     const vals = trips.map(tripRate), br = breaks(vals);
     const totKm = trips.reduce((a, t) => a + t.distNm, 0), totE = trips.reduce((a, t) => a + Core.tripFuelTotal(t), 0);
     $('#trips-sub').textContent = `${trips.length} drives · ${fi(totKm)} km · ~${fi(totE)} kWh`;
@@ -352,12 +382,44 @@
   }
 
   // CHART helper
+  // finger tracking on speed charts: opt.track = { step, y(x), tip(x) } — a vertical line, a dot on the curve in use and one info line
+  const TRACK = new Map(); let trackSeq = 0, trackSvg = null;
+  function trackAt(svg, clientX) {
+    const t = TRACK.get(svg.dataset.track); if (!t) return;
+    const o = t.opt, r = svg.getBoundingClientRect(); if (!r.width) return;
+    let v = o.xMin + ((((clientX - r.left) / r.width) * 340 - 40) / 292) * (o.xMax - o.xMin);
+    const st = o.track.step || 0.1; v = Math.round(Math.max(o.xMin, Math.min(o.xMax, v)) / st) * st;
+    const X = 40 + ((v - o.xMin) / (o.xMax - o.xMin)) * 292, y = o.track.y(v);
+    const Yv = 200 - ((Math.min(Math.max(y, o.yMin), o.yMax) - o.yMin) / (o.yMax - o.yMin)) * 190;
+    const g = svg.querySelector('.trk'), tip = svg.parentNode.querySelector('.trk-tip');
+    g.style.display = ''; g.querySelector('line').setAttribute('x1', X.toFixed(1)); g.querySelector('line').setAttribute('x2', X.toFixed(1));
+    const c = g.querySelector('circle'); c.setAttribute('cx', X.toFixed(1)); c.setAttribute('cy', Yv.toFixed(1)); c.style.display = isFinite(y) ? '' : 'none';
+    tip.textContent = o.track.tip(v); tip.style.display = 'block';
+  }
+  function trackHide() { document.querySelectorAll('.trk').forEach((g) => { g.style.display = 'none'; }); document.querySelectorAll('.trk-tip').forEach((t) => { t.style.display = 'none'; }); }
+  document.addEventListener('pointerdown', (e) => {
+    const svg = e.target.closest && e.target.closest('svg.chart[data-track]');
+    trackHide(); trackSvg = svg || null;
+    if (svg) trackAt(svg, e.clientX);
+  });
+  document.addEventListener('pointermove', (e) => { if (trackSvg && (e.pointerType !== 'mouse' || e.buttons)) trackAt(trackSvg, e.clientX); });
+  ['pointerup', 'pointercancel'].forEach((ev) => document.addEventListener(ev, () => { trackSvg = null; }));
+  const rangeTip = (v) => { const r = Core.range('both', v); return r ? (FIs() ? 'kantama ' : 'range ') + fi(r.oneWay) + ' km' : (FIs() ? 'kantama: kirjaa varaus ensin' : 'range: log the charge first'); };
+  const FIs = () => typeof I18N !== 'undefined' && I18N.lang === 'fi';
   function lineChart(series, opt) {
+    if (opt.track) {
+      if (TRACK.size > 40) [...TRACK.keys()].forEach((k) => { if (!document.querySelector(`[data-track="${k}"]`)) TRACK.delete(k); });
+      const id = 'tk' + (++trackSeq); TRACK.set(id, { opt });
+      return `<div class="chartwrap"><div class="trk-tip" data-noi18n></div>${lineChartSvg(series, opt, id)}</div>`;
+    }
+    return lineChartSvg(series, opt, null);
+  }
+  function lineChartSvg(series, opt, trackId) {
     const W = 340, H = 230, x0 = 40, x1 = 332, y0 = 200, y1 = 10;
     const X = (v) => x0 + ((v - opt.xMin) / (opt.xMax - opt.xMin)) * (x1 - x0);
     const Y = (v) => y0 - ((Math.min(Math.max(v, opt.yMin), opt.yMax) - opt.yMin) / (opt.yMax - opt.yMin)) * (y0 - y1);
     const path = (pts) => pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ');
-    return `<svg class="chart" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(opt.label)}">
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(opt.label)}"${trackId ? ` data-track="${trackId}"` : ''}>
       ${opt.yTicks.map((t) => `<line x1="${x0}" x2="${x1}" y1="${Y(t)}" y2="${Y(t)}" stroke="#ECE8DC"/><text x="${x0 - 6}" y="${Y(t) + 4}" font-size="11" fill="#4F5B66" text-anchor="end">${opt.yFmt(t)}</text>`).join('')}
       ${opt.xTicks.map((t) => `<text x="${X(t)}" y="216" font-size="11" fill="#4F5B66" text-anchor="middle">${opt.xFmt(t)}</text>`).join('')}
       <text x="${x1}" y="228" font-size="11" fill="#4F5B66" text-anchor="end">${esc(opt.xUnit)}</text>
@@ -366,6 +428,7 @@
       ${series.map((s) => (s.band ? `<path d="${s.band.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[2]).toFixed(1)).join(' ')} ${s.band.slice().reverse().map((p) => 'L' + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ')} Z" fill="${s.color}" opacity="0.16"/>` : '')).join('')}
       ${series.map((s) => (s.pts && s.pts.length ? `<path d="${path(s.pts)}" fill="none" stroke="${s.color}" stroke-width="${s.width || 2.5}" ${s.dash ? `stroke-dasharray="${s.dash}"` : ''} stroke-linejoin="round"/>` : '')).join('')}
       ${series.map((s) => (s.dots || []).map((d) => `<circle cx="${X(d[0]).toFixed(1)}" cy="${Y(d[1]).toFixed(1)}" r="${d[2] || 4}" fill="${s.dotFill || s.color}" stroke="${s.dotStroke || '#fff'}" stroke-width="1.5"/>`).join('')).join('')}
+      ${trackId ? `<g class="trk" style="display:none"><line y1="${y1}" y2="${y0}" stroke="#B8470F" stroke-width="1.5"/><circle r="5" fill="#B8470F" stroke="#fff" stroke-width="2"/></g>` : ''}
     </svg>`;
   }
   const niceMax = (v) => { const p = Math.pow(10, Math.floor(Math.log10(v || 1))); const m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p; };
@@ -380,17 +443,20 @@
   const yUnit = () => (curveMetric === 'km' ? 'kWh/100 km' : 'kW');
   R.curve = () => {
     const fit = S().fit, C = S().cons;
-    const sp = []; for (let b = 2; b <= 15; b++) sp.push(Core.bandMid(b));
+    const x0 = curveMetric === 'km' ? 20 : 5;   // per km: from 20 km/h — below that the auxiliary load per km grows without bound
+    const mids = []; for (let b = 1; b <= 15; b++) if (Core.bandMid(b) >= x0) mids.push(Core.bandMid(b));
+    const sp = (mids[0] > x0 ? [x0] : []).concat(mids);
     const band = sp.map((v) => { const y = yval(Core.lphTotal('both', v), v), e = yval(Core.lphSigma('both', v), v); return [v, Math.max(0, y - e), y + e]; });
     const hrs = fit.loggedH.both;
     const series = [
       { pts: sp.map((v) => [v, yval(Core.baseLph('both', v), v)]), color: '#9AA5AE', width: 1.5, dash: '5 4' },
       { pts: sp.map((v) => [v, yval(Core.lphTotal('both', v), v)]), color: '#13212F', band,
-        dots: sp.map((v) => { const b = Core.bandOf(v); return hrs[b] > 0.02 ? [v, yval(Core.lphTotal('both', v), v), 3 + Math.sqrt(hrs[b]) * 1.5] : null; }).filter(Boolean) }];
-    if (C.pts.both.length) series.push({ color: '#13212F', dots: C.pts.both.map((q) => [q.kn, curveMetric === 'km' ? q.lpnm * 100 : q.lpnm * q.kn, 4.5]), dotFill: '#E9B44C', dotStroke: '#13212F' });
+        dots: mids.map((v) => { const b = Core.bandOf(v); return hrs[b] > 0.02 ? [v, yval(Core.lphTotal('both', v), v), 3 + Math.sqrt(hrs[b]) * 1.5] : null; }).filter(Boolean) }];
+    if (C.pts.both.length) series.push({ color: '#13212F', dots: C.pts.both.filter((q) => q.kn >= x0).map((q) => [q.kn, curveMetric === 'km' ? q.lpnm * 100 : q.lpnm * q.kn, 4.5]), dotFill: '#E9B44C', dotStroke: '#13212F' });
     const yMax = niceMax(Math.max(...band.map((p) => p[2])) * 1.05);
     const kmh = Core.live.sogKn;
-    const chart = lineChart(series, { label: 'Energy use against speed', xMin: 0, xMax: 150, yMin: 0, yMax, xTicks: SPX, yTicks: ticks(yMax), xFmt: (v) => v, yFmt: (v) => fi(v), xUnit: 'km/h',
+    const chart = lineChart(series, { track: { step: 1, y: (v) => yval(Core.lphTotal('both', v), v), tip: (v) => `${fi(v)} km/h · ${f(yval(Core.lphTotal('both', v), v))} ± ${f(yval(Core.lphSigma('both', v), v))} ${yUnit()} · ${rangeTip(v)}` },
+      label: 'Energy use against speed', xMin: x0 === 20 ? 20 : 0, xMax: 150, yMin: 0, yMax, xTicks: x0 === 20 ? [20, 40, 60, 80, 100, 120, 140] : SPX, yTicks: ticks(yMax), xFmt: (v) => v, yFmt: (v) => fi(v), xUnit: 'km/h',
       vlines: [{ x: S().settings.minCruiseKn, color: '#C9C1AA' }].concat(kmh >= 3 && kmh <= 150 ? [{ x: kmh, color: '#B8470F' }] : []) });
     const rows = []; for (let b = 1; b < Core.NB - 1; b++) if (hrs[b] > 0.02 || (b >= 2 && b <= 13)) rows.push(b);
     const x = fit.x.bat.both, cols = 'grid-template-columns:1.4fr 1.2fr 1fr .8fr';
@@ -419,13 +485,15 @@
     let sug = '';
     if (sg.list.length) {
       const best = sg.list[0];
-      const sp = []; for (let v = 5; v <= 150; v += 5) sp.push(v);
+      const x0 = curveMetric === 'km' ? 20 : 0;
+      const sp = []; for (let v = x0 || 5; v <= 150; v += 5) sp.push(v);
       const yMax = niceMax(Math.max(...sp.map((v) => Math.max(yval(Core.baseLph('both', v), v), yval(Math.max(Core.floorOf('both'), Core.cfEval(best.model, v)), v)))) * 1.05);
       const chart = lineChart([
         { pts: sp.map((v) => [v, yval(Core.baseLph('both', v), v)]), color: '#9AA5AE', width: 2 },
         { pts: sp.map((v) => [v, yval(Math.max(Core.floorOf('both'), Core.cfEval(best.model, v)), v)]), color: '#E07A2E', width: 2.5 },
-        { color: '#13212F', dots: list.map((q) => [q.kn, curveMetric === 'km' ? q.lpnm * 100 : q.lpnm * q.kn, 4]), dotFill: '#E9B44C', dotStroke: '#13212F' }],
-        { label: 'Suggested fit', xMin: 0, xMax: 150, yMin: 0, yMax, xTicks: SPX, yTicks: ticks(yMax), xFmt: (v) => v, yFmt: (v) => fi(v), xUnit: 'km/h' });
+        { color: '#13212F', dots: list.filter((q) => q.kn >= x0).map((q) => [q.kn, curveMetric === 'km' ? q.lpnm * 100 : q.lpnm * q.kn, 4]), dotFill: '#E9B44C', dotStroke: '#13212F' }],
+        { track: { step: 1, y: (v) => yval(Core.baseLph('both', v), v), tip: (v) => `${fi(v)} km/h · ${FIs() ? 'pohja' : 'base'} ${f(yval(Core.baseLph('both', v), v))} ${yUnit()}` },
+          label: 'Suggested fit', xMin: x0, xMax: 150, yMin: 0, yMax, xTicks: x0 ? [20, 40, 60, 80, 100, 120, 140] : SPX, yTicks: ticks(yMax), xFmt: (v) => v, yFmt: (v) => fi(v), xUnit: 'km/h' });
       sug = `<div class="cardhead" style="padding-top:10px"><div class="h">Suggested fits</div><div class="sub">${sg.loo ? 'error when a point is left out' : 'error at your points'}</div></div>
         ${sg.loo ? '' : '<div class="sub">With 2–3 points the fits cannot be compared reliably yet; the first is the most natural shape for energy use. Add points to compare them by error.</div>'}
         ${sg.list.map((x, i) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #ECE8DC"><div><b>${CF_LABEL[x.m]}${i === 0 ? ' ★' : ''}</b><div class="sub">${x.m === 'power' ? 'exponent ' + f(x.model.n, 2) + ' · ' : ''}±${f(x.rms * 100)} kWh/100 km</div></div><button class="btn small ${i === 0 ? 'primary' : ''}" data-act="cp-use" data-i="${i}">Use</button></div>`).join('')}
@@ -457,13 +525,14 @@
     const tot = (x, v) => Core.lphX(x, 'bat', 'both', v);
     const pc = (v) => (v >= 0 ? '+' : '−') + Math.abs(v * 100).toFixed(0) + ' %';
     const cRow = (label, u, v) => `<div class="tr" style="grid-template-columns:2fr 1fr 1fr"><div>${label}</div><div>${pc(u)}</div><div><b>${pc(v)}</b></div></div>`;
-    const sp = []; for (let v = 10; v <= 150; v += 5) sp.push(v);
+    const sp = []; for (let v = 20; v <= 150; v += 5) sp.push(v);
     const yMax = niceMax(Math.max(...sp.map((v) => Math.max(tot(a.x, v), tot(p.x, v)) / v * 100)) * 1.05);
     const chart = lineChart([
       { pts: sp.map((v) => [v, Core.baseLph('both', v) / v * 100]), color: '#9AA5AE', width: 1.5, dash: '5 4' },
       { pts: sp.map((v) => [v, tot(a.x, v) / v * 100]), color: '#13212F' },
       { pts: sp.map((v) => [v, tot(p.x, v) / v * 100]), color: '#E07A2E', width: 2.5, dash: '7 4' }],
-      { label: 'Current and proposed consumption curve', xMin: 0, xMax: 150, yMin: 0, yMax, xTicks: SPX, yTicks: ticks(yMax), xFmt: (v) => v, yFmt: (v) => fi(v), xUnit: 'km/h' });
+      { track: { step: 1, y: (v) => tot(a.x, v) / v * 100, tip: (v) => `${fi(v)} km/h · ${f(tot(a.x, v) / v * 100)} ± ${f(Core.lpnmSigma('both', v) * 100)} kWh/100 km · ${rangeTip(v)}` },
+        label: 'Current and proposed consumption curve', xMin: 20, xMax: 150, yMin: 0, yMax, xTicks: [20, 40, 60, 80, 100, 120, 140], yTicks: ticks(yMax), xFmt: (v) => v, yFmt: (v) => fi(v), xUnit: 'km/h' });
     sheet(`<h3>Improved consumption curve</h3><p>Fitted to ${p.n} measured intervals. Nothing changes until you accept it.</p>
       <div class="card" style="gap:6px"><div class="cardhead"><div class="sub">Error vs measured intervals</div><div class="num" style="font-size:20px">${f(p.errBefore)} → ${f(p.errAfter)} kWh</div></div>
         <div class="table"><div class="tr head" style="grid-template-columns:1.2fr repeat(4,1fr)"><div>kWh/100 km</div>${kms.map((v) => `<div>${v} km/h</div>`).join('')}</div>
@@ -532,6 +601,7 @@
           <div class="tr" style="${cols}"><div>per 100 km</div><div></div><div></div><div>${sm.boat.nm > 0 ? f((sm.boat.L / sm.boat.nm) * 100) : '–'}</div><div>${sm.boat.nm > 0 ? f((sm.boat.eur / sm.boat.nm) * 100, 2) : '–'}</div></div>
         </div>
         <div class="sub" style="padding-top:6px">kWh = energy used from the battery · € = charging costs in the period (energy from the charger)</div>
+        ${sm.idleH > 0.01 ? `<div class="sub">h includes ${dur(sm.idleH)} standing with the car on.</div>` : ''}
         ${sm.boat.Lest > 0.5 ? `<div class="sub">~ includes ${f(sm.boat.Lest)} kWh estimated from the consumption model (drives without readings).</div>` : ''}
         <div class="btnrow" style="padding:8px 0 0 0"><button class="btn small grow" data-act="go" data-v="trips">Drives</button><button class="btn small grow" data-act="manual-new">Add drive by hand</button></div>
       </div>
@@ -541,6 +611,7 @@
         ${charges.length > LOG_N ? `<div class="btnrow" style="padding:6px 0 0 0"><button class="btn small grow" data-act="log-all" data-k="refuel">${logAll.refuel ? 'Show fewer' : 'Show all ' + charges.length}</button></div>` : ''}
         <div class="btnrow" style="padding:8px 0 0 0"><button class="btn small grow primary" data-act="go" data-v="refuel">Log charging</button></div>
       </div>
+      ${idleLogCard(from, to)}
       <div class="card" style="gap:0"><div class="cardhead"><div class="h">Charge readings</div><div class="sub">${reads.length} readings</div></div>
         ${reads.length ? (logAll.dip ? reads : reads.slice(0, LOG_N)).map((e) => `<div class="logrow"><div class="main"><b>${dtstr(e.t)}</b><span>${KIND_LABEL[Core.dipKind(e)]}${e.rough ? ' · uncertain' : ''}</span></div><div class="right"><span class="num">${f(e.mm, 0)} %</span><span>${f(Core.litres('bat', e.mm))} kWh</span></div><button class="iconbtn" aria-label="Delete reading" data-act="del-event" data-id="${e.id}">${IC.x}</button></div>`).join('') : '<div class="sub">No readings in this period.</div>'}
         ${reads.length > LOG_N ? `<div class="btnrow" style="padding:6px 0 0 0"><button class="btn small grow" data-act="log-all" data-k="dip">${logAll.dip ? 'Show fewer' : 'Show all ' + reads.length}</button></div>` : ''}
@@ -763,7 +834,7 @@
         <div class="btnrow" style="padding:0"><button class="btn small grow" data-act="export">Export backup</button><label class="btn small grow" for="importf">Import backup</label><input type="file" id="importf" accept="application/json,.json" style="display:none" data-act="import"></div>
       </div>
       <div class="btnrow"><button class="btn small grow" data-act="check-update">Check for app update</button></div>
-      <div class="note">EV log 1.0.1 — test version of the Popcorn Fuel Log · Charging stations © OpenStreetMap contributors · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
+      <div class="note">EV log 1.2 — test version of the Popcorn Fuel Log · Charging stations © OpenStreetMap contributors · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
   };
 
   function loadSheet() {
@@ -813,6 +884,21 @@
       Core.addDip('bat', p, $('#dip-rough').checked, undefined, 'before');
       toast('Reading saved'); go('helm'); loadSheet();
     },
+'idle-start-sheet': () => { Core.startIdle('both'); renderHelmDyn(); toast('Idle run started'); },
+    'idle-stop': () => { const tr = Core.stopIdle(); renderHelmDyn(); toast(tr ? 'Idle run saved: ' + dur(tr.hours) : 'Idle run under a minute — not saved'); },
+    'ir-add': () => idleSheet(null),
+    'ir-edit': (el) => { const tr = S().trips.find((t) => t.id === el.dataset.id); if (tr) idleSheet(tr); },
+    'ir-mode': (el) => { idleMode = el.dataset.m; segOn(el); },
+    'ir-save': () => {
+      const start = readWhen('ir-start'), h = (Core.num($('#ir-h').value) || 0) + (Core.num($('#ir-min').value) || 0) / 60;
+      if (!(h > 0 && h <= 24)) return toast('Enter the duration (up to 24 h)');
+      if (start + h * 3600000 > Date.now() + 300000) return toast('The idle run cannot end in the future');
+      const o = { start, hours: h, mode: idleMode };
+      if (idleEdit) Core.updateIdle(idleEdit, o); else { Core.addIdle(o); S().settings.lastIdleMode = idleMode; }
+      closeSheet(); toast(idleEdit ? 'Saved' : 'Idle run added'); (R[current] || R.log)();
+    },
+    'ir-del': () => { const id = idleEdit; confirmSheet('Delete this idle run?', 'Levels and consumption are recalculated without it.', 'Delete', async () => { await Core.deleteTrip(id); (R[current] || R.log)(); }); },
+    'ir-del-row': (el) => confirmSheet('Delete this idle run?', 'Levels and consumption are recalculated without it.', 'Delete', async () => { await Core.deleteTrip(el.dataset.id); (R[current] || R.log)(); }),
     'manual-new': () => go('tripform', {}),
     'manual-edit': (el) => go('tripform', { id: el.dataset.id }),
     'mt-load': (el) => { mtLoad = el.dataset.l; segOn(el); mtCalc(); },

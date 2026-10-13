@@ -173,3 +173,8 @@ svg.chart text { font-family: 'Barlow', sans-serif; }
 .optrow > .lbl{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 .optrow .chips{padding:0;gap:6px}
 .optrow .chip{height:36px;padding:0 12px}
+
+/* finger tracking on speed charts */
+.chartwrap{position:relative}
+.trk-tip{position:absolute;top:0;left:50%;transform:translateX(-50%);background:#13212F;color:#fff;border-radius:8px;padding:3px 10px;font-size:12.5px;font-weight:600;white-space:nowrap;display:none;pointer-events:none;z-index:2;font-family:'Barlow Semi Condensed',Barlow,sans-serif}
+svg.chart[data-track]{touch-action:pan-y;cursor:crosshair;-webkit-user-select:none;user-select:none}

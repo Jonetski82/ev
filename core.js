@@ -186,8 +186,10 @@ const Core = (() => {
   }
   // fit one method to points [[kn, L/h]]; returns a model or null
   function cfFit(m, pts, floor) {
-    const p = pts.slice().sort((a, b) => a[0] - b[0]), xs = p.map((q) => q[0]), ys = p.map((q) => q[1]);
-    if (p.length < CF_MIN[m] || new Set(xs).size < p.length) return null;
+    let p = pts.slice().sort((a, b) => a[0] - b[0]);
+    if (p.length < CF_MIN[m] || new Set(p.map((q) => q[0])).size < p.length) return null;
+    if (m !== 'power' && isFinite(floor) && p[0][0] > 0.5) p = [[0, floor]].concat(p);   // at zero speed: idle use
+    const xs = p.map((q) => q[0]), ys = p.map((q) => q[1]);
     if (m === 'linear') return { m, xs, ys };
     if (m === 'spline') return { m, xs, ys, d: pchipD(xs, ys) };
     if (m === 'poly2') { const c = lsq(xs.map((v) => [1, v, v * v]), ys); return c.every(isFinite) ? { m, c } : null; }
@@ -353,7 +355,7 @@ const Core = (() => {
   // biggest relative change on speed bands you have driven (0.25 h or more), and the change in condition effects
   function consChange(a, b, loggedH) {
     let rel = 0;
-    for (let k = 1; k < NB - 1; k++) {
+    for (let k = 0; k < NB - 1; k++) {   // band 0 = idle runs and standing
       if (loggedH.both[k] >= 0.25) { const u = ENG.reduce((t, e) => t + a.x[e].both[k], 0), v = ENG.reduce((t, e) => t + b.x[e].both[k], 0); rel = Math.max(rel, Math.abs(v - u) / Math.max(0.5, u)); }
       if (ENG.length > 1) ENG.forEach((e) => { if (loggedH[e][k] >= 0.25) rel = Math.max(rel, Math.abs(b.x[e].solo[k] - a.x[e].solo[k]) / Math.max(0.5, a.x[e].solo[k])); });
     }
@@ -378,7 +380,7 @@ const Core = (() => {
       C.pending = { ...cand, rel: ch.rel, condChange: ch.cond, n: ints.length, errBefore: intervalRms(ints, C.active), errAfter: intervalRms(ints, cand) };
     } else C.pending = null;
     const A = C.active;
-    S.fit = { x: A.x, sig: A.sig, cond: A.cond, condSd: A.condSd, condN, loggedH, nIntervals: ints.length, nTrips: S.trips.length, updated: Date.now() };
+    S.fit = { x: A.x, sig: A.sig, cond: A.cond, condSd: A.condSd, condN, loggedH, nIntervals: ints.length, nTrips: S.trips.filter((t) => !t.idle).length, updated: Date.now() };
     return S.fit;
   }
   function consSnapshot(note) {
@@ -465,6 +467,7 @@ const Core = (() => {
     let used = 0;
     S.trips.filter((tr) => tr.end > last.t).forEach((tr) => { used += tripFuel(tr, tid); });
     if (S.active && S.active.start >= last.t) used += tripFuel(S.active, tid);
+    const ir = idleNow(); if (ir && ir.start >= last.t) used += tripFuel(ir, tid);
     return { L: Math.max(0, levelAfter(last) - used), since: last, known: true };
   }
   function usable(tid) {
@@ -543,14 +546,14 @@ const Core = (() => {
   // dips made before this app version have no kind: a dip after a trip ended (within 6 h, first dip of that tank since) counts as "after"
   function dipKind(e) {
     if (e.kind) return e.kind;
-    const prev = S.trips.filter((tr) => tr.end <= e.t).sort((a, b) => b.end - a.end)[0];
+    const prev = S.trips.filter((tr) => !tr.idle && tr.end <= e.t).sort((a, b) => b.end - a.end)[0];
     if (!prev || e.t - prev.end > 6 * 3600000) return 'check';
     const earlier = S.events.some((x) => x.tank === e.tank && x.id !== e.id && x.t > prev.end && x.t < e.t);
     return earlier ? 'check' : 'after';
   }
   // true when a tank has had no dip or refuel since the last trip ended
   function needsPreDip() {
-    const lastEnd = S.trips.reduce((m, tr) => Math.max(m, tr.end || 0), 0);
+    const lastEnd = S.trips.filter((tr) => !tr.idle).reduce((m, tr) => Math.max(m, tr.end || 0), 0);
     return ENG.some((e) => { const ev = eventsFor(e); return !ev.length || ev[ev.length - 1].t < lastEnd; });
   }
   // distance per engine: hours × band speed per mode, scaled to the trip distance
@@ -572,10 +575,10 @@ const Core = (() => {
   }
   function summary(from, to) {
     const z = () => ({ nm: 0, h: 0, L: 0, Lest: 0, eur: 0, bought: 0 });
-    const r = { boat: z(), trips: 0 }; ENG.forEach((e) => { r[e] = z(); });
+    const r = { idleH: 0, boat: z(), trips: 0 }; ENG.forEach((e) => { r[e] = z(); });
     const split = tripFuelSplit();
     S.trips.filter((tr) => tr.start >= from && tr.start < to).forEach((tr) => {
-      r.trips++;
+      if (tr.idle) r.idleH += tr.hours; else r.trips++;
       const nm = tripEngineNm(tr), h = tripEngineH(tr);
       r.boat.nm += tr.distNm; r.boat.h += tr.hours;
       ENG.forEach((e) => {
@@ -613,8 +616,28 @@ const Core = (() => {
   }
   function stopWatch() { if (watchId !== null) navigator.geolocation.clearWatch(watchId); watchId = null; }
 
+  // ---------- idle runs (engine running / car on while standing, no GPS) ----------
+  const idleBands = (hours, mode) => { const bb = emptyBands(); bb[mode || 'both'][0] = hours; return bb; };
+  const idleTrip = (start, hours, mode) => ({ start, end: start + hours * 3600000, distNm: 0, bandsBy: idleBands(hours, mode), hours, gaps: 0, idle: true, manual: { mode: mode || 'both' },
+    samples: [], modeLog: [[start, mode || 'both']], rpmLog: [], load: 'normal', wind: { status: 'none', reason: 'idle' } });
+  function idleNow() { const r = S.idleRun; if (!r) return null; const h = Math.max(0, (Date.now() - r.start) / 3600000); return idleTrip(r.start, h, r.mode); }
+  function addIdle(o) { const tr = Object.assign({ id: uid(), name: 'Idle' }, idleTrip(o.start, o.hours, o.mode)); S.trips.push(tr); refit(); save(); return tr; }
+  function updateIdle(id, o) {
+    const i = S.trips.findIndex((t) => t.id === id && t.idle); if (i < 0) return null;
+    S.trips[i] = Object.assign({ id, name: S.trips[i].name }, idleTrip(o.start, o.hours, o.mode)); refit(); save(); return S.trips[i];
+  }
+  function startIdle(mode) { if (S.active || S.idleRun) return; S.idleRun = { start: Date.now(), mode: mode || 'both' }; save(); emit(); }
+  function stopIdle() {
+    const r = S.idleRun; if (!r) return null;
+    S.idleRun = null;
+    const h = (Date.now() - r.start) / 3600000;
+    if (h < 1 / 60) { save(); emit(); return null; }   // under a minute: not worth a log entry
+    const tr = addIdle({ start: r.start, hours: h, mode: r.mode }); emit(); return tr;
+  }
+
   async function startTrip(mode, load) {
     if (S.active) return S.active;
+    if (S.idleRun) stopIdle();
     const t = Date.now();
     S.settings.lastLoad = load || S.settings.lastLoad || 'normal';
     S.active = { id: uid(), start: t, end: null, distNm: 0, bandsBy: emptyBands(), last: null, paused: false, gaps: 0, name: '', load: S.settings.lastLoad,
@@ -746,7 +769,7 @@ const Core = (() => {
     tank, litres, unusableL, chargeStats, levelNow, usable, eventsFor, levelAfter, intervals, refit,
     lphEng, lphTotal, lpnm, lphSigma, lpnmSigma, lphX, baseLph, consSuggestions, cfEval, acceptCons, rejectCons, setConsBase, setConsIdle, floorOf, restoreCons, addConsPoint, updateConsPoint, deleteConsPoint, findConsPoint, economy, range, tripFuel, tripFuelTotal, tripMeasured,
     addDip, addRefuel, deleteEvent, dipKind, needsPreDip, summary, seasons,
-    startTrip, stopTrip, setPaused, setMode, setRpm, resumeIfActive, activeTrack, trackGet, deleteTrip,
+    startTrip, stopTrip, startIdle, stopIdle, idleNow, addIdle, updateIdle, setPaused, setMode, setRpm, resumeIfActive, activeTrack, trackGet, deleteTrip,
     exportAll, importAll, addManualTrip, updateManualTrip, kvGet, kvSet, addStationPrice, addUserStation, deleteUserStation, setTripLoad, setTripWind, condFactor, loadFactor, _onFix: (p) => onFix(p)
   };
 })();
