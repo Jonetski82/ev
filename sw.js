@@ -1,8 +1,8 @@
 // Service worker: app shell offline + map tile cache.
-const APP_CACHE = 'evlog-app-v5';
+const APP_CACHE = 'evlog-app-v6';
 const TILE_CACHE = 'evlog-tiles-v1';
 const APP_FILES = [
-  './', './index.html', './styles.css', './core.js', './wind.js', './i18n.js', './app.js', './manifest.webmanifest',
+  './', './index.html', './styles.css', './core.js', './wind.js', './i18n.js', './app.js', './roads.js', './roads-worker.js', './manifest.webmanifest',
   './leaflet.js', './leaflet.css', './icon-192.png', './icon-512.png'
 ];
 const TILE_HOSTS = ['julkinen.traficom.fi', 'tile.openstreetmap.org', 'tiles.openseamap.org', 'avoin-karttakuva.maanmittauslaitos.fi'];
@@ -52,6 +52,9 @@ self.addEventListener('fetch', (e) => {
     );
     return;
   }
+
+  // Road data is stored by the app itself (IndexedDB), not in the cache.
+  if (url.origin === self.location.origin && url.pathname.includes('/roads/')) return;
 
   // App shell: network first (so updates arrive), fall back to cache offline.
   if (url.origin === self.location.origin) {

@@ -737,7 +737,8 @@
         <div class="note" id="range-status"></div>
         <div id="range-route"></div>
         <div class="card" id="range-opts" style="gap:10px"><div class="cardhead"><div class="h">Settings</div></div>
-          <div class="optrow"><span class="lbl">Speed</span><div class="chips" id="range-spd"></div></div>
+          <div class="optrow"><span class="lbl">Area</span><div class="chips" id="range-area"></div></div>
+          <div class="optrow" id="range-spd-row"><span class="lbl">Speed</span><div class="chips" id="range-spd"></div></div>
           <div class="optrow"><span class="lbl">Distance</span><div class="chips" id="range-seg"></div></div>
           <div class="optrow"><span class="lbl">Start</span><div class="chips" id="range-start"></div></div>
         </div>
@@ -749,8 +750,58 @@
     }
     renderRange();
   };
+  // ---- range along roads: heat glow, green (enough to come back) → yellow (turn back) → red (one way only) ----
+  const winterNow = () => { const m = S().settings.speedSeason || 'auto'; if (m !== 'auto') return m === 'winter'; const d = new Date(), mo = d.getMonth(); return mo >= 10 || mo <= 2 || (mo === 9 && d.getDate() >= 25); };
+  const HEAT = (r) => { const mix = (a, b, t) => { const A = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16)), B = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16)); return 'rgb(' + A.map((x, i) => Math.round(x + (B[i] - x) * t)).join(',') + ')'; };
+    const stops = [[0, '#E0352B'], [0.35, '#F08A2C'], [0.47, '#F2C230'], [0.56, '#F2C230'], [0.66, '#5DC26A'], [1, '#169C62']];   // green = enough to come back
+    r = Math.max(0, Math.min(1, r)); let k = 1; while (k < stops.length - 1 && r > stops[k][0]) k++;
+    const [a, ca] = stops[k - 1], [b, cb] = stops[k]; return mix(ca, cb, b > a ? (r - a) / (b - a) : 0); };
+  const GlowLayer = L.Layer.extend({
+    initialize(p) { this.p = p; this.buckets = Array.from({ length: 16 }, () => []); for (let i = 0; i < p.length; i += 5) this.buckets[Math.max(0, Math.min(15, Math.floor(p[i + 4] * 16)))].push(i); },
+    onAdd(map) { this._map = map; this._c = L.DomUtil.create('canvas', 'glow-canvas', map.getPane('overlayPane')); map.on('moveend zoomend resize viewreset', this._draw, this); map.on('zoomstart', this._hide, this); this._draw(); },
+    onRemove(map) { L.DomUtil.remove(this._c); map.off('moveend zoomend resize viewreset', this._draw, this); map.off('zoomstart', this._hide, this); },
+    _hide() { this._c.style.display = 'none'; },
+    _draw() {
+      const m = this._map, sz = m.getSize(), c = this._c, dpr = Math.min(2, window.devicePixelRatio || 1), p = this.p;
+      c.width = sz.x * dpr; c.height = sz.y * dpr; c.style.width = sz.x + 'px'; c.style.height = sz.y + 'px';
+      L.DomUtil.setPosition(c, m.containerPointToLayerPoint([0, 0]));
+      const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.lineWidth = Math.max(6, Math.min(26, 6 + (m.getZoom() - 7) * 4)); ctx.globalAlpha = 0.85;
+      const o = m.containerPointToLayerPoint([0, 0]), pr = (la, lo) => m.latLngToLayerPoint([la, lo]).subtract(o);
+      this.buckets.forEach((list, k) => {   // red first, green last: the colour near the start stays on top
+        if (!list.length) return;
+        ctx.strokeStyle = HEAT((k + 0.5) / 16); ctx.beginPath();
+        list.forEach((i) => { const a = pr(p[i], p[i + 1]), b = pr(p[i + 2], p[i + 3]); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); });
+        ctx.stroke();
+      });
+      c.style.display = '';
+    }
+  });
+  let glow = null, roadsRes = null, roadRoute = null, roadsToken = 0;
+  const kwhKmTable = () => { const lf = Core.loadFactor(S().active ? S().active.load : S().settings.lastLoad); return Array.from({ length: 161 }, (_, v) => (Core.lphTotal('both', Math.max(5, v)) / Math.max(5, v)) * lf); };
+  async function renderRoads(c) {
+    const m = maps.range, u = Core.usable('bat'), tk = ++roadsToken;
+    if (glow) { m.removeLayer(glow); glow = null; }
+    setRangeStatus('Calculating along roads…');
+    const res = await Roads.compute(c[0], c[1], u.usable, kwhKmTable(), winterNow());
+    if (tk !== roadsToken) return;
+    roadsRes = res.error ? null : res;
+    if (res.error) {   // no road data or no road nearby: fall back to the straight-line circle
+      drawCircle(rangeCtx);
+      $('#range-dyn').insertAdjacentHTML('beforeend', `<div class="warn">${res.error === 'nodata' ? 'No road data yet: More → Road data for range → Download. Showing the straight-line circle.' : 'No road within 5 km of the start point. Showing the straight-line circle.'}</div>`);
+      return;
+    }
+    glow = new GlowLayer(res.pieces).addTo(m);
+    const one = res.maxOne, round = res.maxRound;
+    $('#range-dyn').innerHTML = `<div class="card dark" style="margin-top:4px"><div class="cardhead"><div><div class="sub">${rangeMode === 'round' ? 'Turn back before' : 'Reach'}</div><div class="num" style="font-size:30px">${fi(rangeMode === 'round' ? round : one)} km</div><div class="sub">along roads, energy road by road</div></div><div style="text-align:right;max-width:170px" class="sub">down to ${fi(BAT().pipeMm)} % charge<br>${winterNow() ? 'winter speed limits' : 'summer speed limits'}</div></div></div>`;
+    setRangeStatus(`green = enough to come back · yellow = turn back · red = one way only · ${f(res.ms / 1000)} s`);
+    if (openStation) stationCard(openStation);
+  }
   function renderRange() {
     const s = S(), lv = Core.live, eco = Core.economy();
+    const area = s.settings.rangeArea === 'circle' ? 'circle' : 'roads';
+    $('#range-area').innerHTML = `<button class="chip ${area === 'roads' ? 'on' : ''}" data-act="range-area" data-a="roads">Roads</button><button class="chip ${area === 'circle' ? 'on' : ''}" data-act="range-area" data-a="circle">Circle</button>`;
+    $('#range-spd-row').style.display = area === 'roads' ? 'none' : '';
     const nowK = lv.sogAvg >= 20 && lv.sogAvg <= 160 ? lv.sogAvg : 80;
     const ecoK = eco ? eco.best.kn : 50;
     const kmh = rangeSpeed === 'eco' ? ecoK : nowK, alt = rangeSpeed === 'eco' ? nowK : ecoK;
@@ -762,18 +813,24 @@
     $('#range-spd').innerHTML = `<button class="chip ${rangeSpeed === 'now' ? 'on' : ''}" data-act="range-speed" data-s="now">${fi(nowK)} km/h ${lv.sogAvg >= 20 ? '(now)' : ''}</button><button class="chip ${rangeSpeed === 'eco' ? 'on' : ''}" data-act="range-speed" data-s="eco">${fi(ecoK)} km/h (economy)</button>`;
     $('#range-dyn').innerHTML = !r ? '<div class="warn">Log the charge % once (Battery → Log charge) to see the range.</div>' : `
       <div class="card dark" style="margin-top:4px"><div class="cardhead"><div><div class="sub">${rangeMode === 'round' ? 'Turn back before' : 'Reach'}</div><div class="num" style="font-size:30px">${fi(nmv(r))} km</div><div class="sub">${per100(r.lpnm)} kWh/100 km at ${fi(kmh)} km/h</div></div><div style="text-align:right;max-width:170px" class="sub">down to ${fi(BAT().pipeMm)} % charge<br>Dashed: ${fi(nmv(r2))} km at ${fi(alt)} km/h</div></div></div>`;
-    $('#range-note').textContent = 'Range is shown as a straight-line circle; roads are longer, typically by 20–40 %. Planning aid only — cold, wind, hills and heating add to consumption.';
+    $('#range-note').textContent = area === 'roads' ? 'Each road is driven at its speed limit with your learned consumption at that speed. Routes are the fastest ones, as a navigator would choose. Planning aid only — cold, wind, hills, heating and traffic add to consumption.' : 'Range is shown as a straight-line circle; roads are longer, typically by 20–40 %. Planning aid only — cold, wind, hills and heating add to consumption.';
     const m = maps.range; m._over.clearLayers(); clearRoute();
+    if (glow) { m.removeLayer(glow); glow = null; } roadsRes = null;
     const man = s.settings.rangeStart;
     const c = man ? [man.lat, man.lon] : lv.fix ? [lv.fix.lat, lv.fix.lon] : null;
     $('#range-start').innerHTML = `<button class="chip ${man ? '' : 'on'}" data-act="range-start-gps">${lv.fix ? 'Car (GPS)' : 'GPS – no position'}</button>
       ${man ? '<button class="chip on" data-act="range-start-gps">Chosen point ✕</button>' : '<span class="sub" style="align-self:center">or long-press the map</span>'}`;
-    rangeCtx = { r, kmh, c };
+    rangeCtx = { r, r2, kmh, c, nmv };
     drawStations();
     $('#ch-count').textContent = allStations().length + ' on the map';
     if (!r) return;
     if (!c) { setRangeStatus('No GPS position. Long-press the map (or tap it and choose "Start from here") to set a start point.'); return; }
     L.marker(c, { icon: man ? startIcon() : carIcon(lv.fix ? lv.fix.heading || 0 : 0), interactive: false, zIndexOffset: 1000 }).addTo(m._over);
+    if (area === 'roads') { m.invalidateSize(); if (!m._roadsFitted || m._roadsFitted !== c.join()) { m.fitBounds(L.latLng(c).toBounds(Math.max(20, nmv(r)) * 1000 * 1.3)); m._roadsFitted = c.join(); } renderRoads(c); return; }
+    drawCircle(rangeCtx);
+  }
+  function drawCircle({ r, r2, c, nmv }) {
+    const m = maps.range;
     L.circle(c, { radius: nmv(r) * 1000, color: '#1F5675', weight: 2, fillColor: '#1F5675', fillOpacity: 0.14, interactive: false }).addTo(m._over);
     if (r2) L.circle(c, { radius: nmv(r2) * 1000, color: '#1F5675', weight: 2, dashArray: '6 5', fill: false, interactive: false }).addTo(m._over);
     m.invalidateSize(); m.fitBounds(L.latLng(c).toBounds(Math.max(nmv(r), nmv(r2) || 0) * 1000 * 2.1));
@@ -807,7 +864,14 @@
     const info = [st.operator && st.operator !== st.name ? esc(st.operator) : '', st.sockets ? esc(st.sockets) : '', st.capacity ? esc(st.capacity) + ' places' : ''].filter(Boolean).join(' · ');
     const ctx = rangeCtx;
     let dist = '';
-    if (ctx && ctx.c) {
+    if (roadsRes) {
+      dist = '<div class="sub" id="st-road">Distance along roads…</div>';
+      Roads.stations([{ id: st.id, lat: st.lat, lon: st.lon }]).then(([x]) => {
+        const el = document.getElementById('st-road'); if (!el || openStation !== st) return;
+        const u = Core.usable('bat');
+        el.innerHTML = x ? `${f(x.km)} km along roads · ${f(x.kwh)} kWh · <b style="color:${x.kwh <= u.usable / 2 ? '#1F6E5A' : x.kwh <= u.usable ? '#B8470F' : '#A63A2A'}">${x.kwh <= u.usable / 2 ? 'there and back' : x.kwh <= u.usable ? 'one way only' : 'beyond range'}</b>` : 'Not reachable along roads with the charge left (or over 2 km from a road).';
+      });
+    } else if (ctx && ctx.c) {
       const km = Core.haversine(ctx.c, [st.lat, st.lon]) / 1000;
       const ok = ctx.r && km <= ctx.r.oneWay;
       dist = `<div class="sub">${f(km)} km straight line${ctx.r ? ` · ${f(km * ctx.r.lpnm)} kWh at ${fi(ctx.kmh)} km/h · <b style="color:${ok ? '#1F6E5A' : '#A63A2A'}">${ok ? 'reachable' : 'beyond range'}</b>` : ''}</div>`;
@@ -819,9 +883,18 @@
   const startIcon = () => L.divIcon({ className: 'boat-icon', iconSize: [22, 22], iconAnchor: [11, 11], html: '<svg width="22" height="22" viewBox="-11 -11 22 22"><circle r="8" fill="#B8470F" stroke="#fff" stroke-width="3"/><circle r="2.5" fill="#fff"/></svg>' });
   function setRangeStart(lat, lon) { S().settings.rangeStart = { lat: +lat.toFixed(5), lon: +lon.toFixed(5) }; Core.save(); toast('Start point set'); renderRange(); }
   function setRangeStatus(t) { const el = $('#range-status'); if (el) el.textContent = t; }
-  function clearRoute() { const el = $('#range-route'); if (el) el.innerHTML = ''; }
-  function rangeTap(ev) {
+  function clearRoute() { const el = $('#range-route'); if (el) el.innerHTML = ''; if (roadRoute && maps.range) { maps.range.removeLayer(roadRoute); roadRoute = null; } }
+  async function rangeTap(ev) {
     lastTap = ev.latlng; openStation = null;
+    if (roadRoute) { maps.range.removeLayer(roadRoute); roadRoute = null; }
+    if (roadsRes) {
+      const x = await Roads.route(ev.latlng.lat, ev.latlng.lng), u = Core.usable('bat');
+      if (x && x.pts.length > 1) roadRoute = L.polyline(x.pts, { color: '#13212F', weight: 3, dashArray: '7 5' }).addTo(maps.range);
+      $('#range-route').innerHTML = `<div class="card">${x ? `<div class="cardhead"><div><div class="sub">Along roads</div><div class="num" style="font-size:24px">${f(x.km)} km</div></div><div style="text-align:right"><div class="sub">Energy</div><div class="num" style="font-size:20px">${f(x.kwh)} kWh one way</div></div></div>
+        <div class="sub" style="font-weight:600;color:${x.kwh <= u.usable / 2 ? '#1F6E5A' : x.kwh <= u.usable ? '#B8470F' : '#A63A2A'}">${x.kwh <= u.usable / 2 ? 'Enough charge there and back.' : x.kwh <= u.usable ? 'Enough one way only — charge there.' : 'Not enough charge to get there.'}</div>` : '<div class="sub">Not reachable along roads with the charge left, or the point is over 2 km from a road.</div>'}
+        <div class="btnrow" style="padding:0"><button class="btn small grow" data-act="range-start-here">Start from here</button><button class="btn small grow" data-act="add-station">Add charging station here</button></div></div>`;
+      return;
+    }
     const ctx = rangeCtx;
     const km = ctx && ctx.c ? Core.haversine(ctx.c, [ev.latlng.lat, ev.latlng.lng]) / 1000 : NaN;
     $('#range-route').innerHTML = `<div class="card">${isFinite(km) ? `<div class="sub">${f(km)} km straight line from the start${ctx.r ? ' · ' + f(km * ctx.r.lpnm) + ' kWh' : ''}</div>` : ''}
@@ -850,6 +923,7 @@
     throw lastErr || new Error('no answer');
   }
 
+  const roadsInfo = (m) => `built ${dstr(Date.parse(m.built))} · ${fi(m.km)} km of road · ${(m.bytes || 0) < 1e6 ? fi((m.bytes || 0) / 1e3) + ' kB' : f(m.bytes / 1e6) + ' MB'}`;
   // SETTINGS
   R.more = () => {
     const s = S().settings;
@@ -870,6 +944,14 @@
         <div class="field"><label for="mincruise">Driving from<small>slower = town traffic, never proposed</small></label><div class="inbox"><input id="mincruise" inputmode="decimal" value="${dv(s.minCruiseKn)}" data-act="setnum" data-k="minCruiseKn"><span>km/h</span></div></div>
         <div class="field"><label for="effm">Efficient speed margin<small>max extra energy per km vs the best</small></label><div class="inbox"><input id="effm" inputmode="decimal" value="${dv(s.effMarginPct)}" data-act="setnum" data-k="effMarginPct"><span>%</span></div></div>
       </div>
+      <div class="card"><div class="cardhead"><div class="h">Road data for range</div></div>
+        <div class="sub">Motorways to connecting roads from OpenStreetMap, built by the "Build road data" workflow in your GitHub repository. Download once on Wi-Fi; it then works offline.</div>
+        <button class="btn small" data-act="roads-download">Download / update road data</button>
+        <div class="sub" id="roads-out">${Roads.meta ? roadsInfo(Roads.meta) : 'Not downloaded yet.'}</div>
+        <div class="cardhead" style="padding-top:6px"><div class="h" style="font-size:14px">Speed limits</div><div class="sub">${winterNow() ? 'winter now' : 'summer now'}</div></div>
+        <div class="seg" style="margin:0">${[['auto', 'By date'], ['summer', 'Summer'], ['winter', 'Winter']].map(([k, l]) => `<button class="${(s.speedSeason || 'auto') === k ? 'on' : ''}" data-act="season" data-s="${k}">${l}</button>`).join('')}</div>
+        <div class="sub">Winter (by date 25.10.–31.3.): 120 → 100 and 100 → 80 km/h. OpenStreetMap has no winter limits, so they follow the Finnish practice.</div>
+      </div>
       <div class="card"><div class="cardhead"><div class="h">Charging stations</div><div class="sub">${allStations().length} on the map${(S().userStations || []).length ? ' (' + S().userStations.length + ' your own)' : ''}</div></div>
         <div class="sub">Fetched from OpenStreetMap on this phone, within 100 km of your position (or the range start point).</div>
         <button class="btn small" data-act="fuel-update">Load charging stations</button><div class="sub" id="fuel-out"></div>
@@ -879,7 +961,7 @@
         <div class="btnrow" style="padding:0"><button class="btn small grow" data-act="export">Export backup</button><label class="btn small grow" for="importf">Import backup</label><input type="file" id="importf" accept="application/json,.json" style="display:none" data-act="import"></div>
       </div>
       <div class="btnrow"><button class="btn small grow" data-act="check-update">Check for app update</button></div>
-      <div class="note">EV log 1.3 — test version of the Popcorn Fuel Log · Charging stations © OpenStreetMap contributors · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
+      <div class="note">EV log 1.4 — test version of the Popcorn Fuel Log · Charging stations and road data © OpenStreetMap contributors (ODbL) · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
   };
 
   function loadSheet() {
@@ -1051,6 +1133,14 @@
       go(backOf.refuel || 'tanks'); toast(bp ? 'Charging saved — improved battery curve available on the Battery page' : 'Charging saved', bp ? 4000 : 2800);
     },
     'range-mode': (el) => { rangeMode = el.dataset.m; renderRange(); },
+    'range-area': (el) => { S().settings.rangeArea = el.dataset.a; Core.save(); renderRange(); },
+    'season': (el) => { S().settings.speedSeason = el.dataset.s; Core.save(); R.more(); },
+    'roads-download': async () => {
+      const out = $('#roads-out'), btn = $('[data-act=roads-download]'); btn.disabled = true;
+      try { const m = await Roads.download((t) => { out.textContent = t; }); out.textContent = roadsInfo(m); toast('Road data ready'); }
+      catch (e) { out.textContent = 'Failed: ' + e.message; }
+      btn.disabled = false;
+    },
     'range-speed': (el) => { rangeSpeed = el.dataset.s; renderRange(); },
     'range-start-here': () => { if (lastTap) setRangeStart(lastTap.lat, lastTap.lng); },
     'range-start-gps': () => { S().settings.rangeStart = null; Core.save(); toast('Start from the car GPS position'); renderRange(); },
@@ -1134,6 +1224,7 @@
   window.addEventListener('online', () => Wind.processPending(windDone));
   Core.init().then(async () => {
     try { const c = await Core.kvGet('chargers'); if (c && c.list) chargers = c.list; } catch (e) { /* none yet */ }
+    Roads.init();
     setTimeout(() => Wind.processPending(windDone), 3000);
     go('helm');
     Core.resumeIfActive();

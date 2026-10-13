@@ -181,3 +181,6 @@ svg.chart[data-track]{touch-action:pan-y;cursor:crosshair;-webkit-user-select:no
 
 /* predicted value in reading inputs */
 .inbox input::placeholder{color:#AEB6BD;font-weight:500}
+
+/* range along roads: heat glow */
+.glow-canvas{position:absolute;left:0;top:0;pointer-events:none;filter:blur(6px) saturate(1.15);opacity:.9}
