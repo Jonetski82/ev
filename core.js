@@ -74,9 +74,12 @@ const Core = (() => {
       active: null,
       hull: { clean: [], cleanSample: true, cleanings: [] },
       fit: null,
-      cons: defaultCons()
+      cons: defaultCons(),
+      batt: defaultBatt()
     };
   }
+  // battery curve: energy(charge %) = capacity × ((1 + scale)·u + Σ c_k·(u^(k+1) − u)), u = % / 100; charging losses per place
+  const defaultBatt = () => ({ active: { scale: 0, c: [0, 0, 0], loss: { home: 0.10, station: 0.05 } }, pending: null, rejected: null, history: [] });
   // consumption: your estimate points (km/h, kWh/km), the base curve fitted to them, the curve in use and the proposal
   const defaultCons = () => ({ pts: { both: [] }, base: { both: null }, idle: { bat: 1 }, active: null, pending: null, rejected: null, history: [] });
   function migrate(s) {
@@ -88,6 +91,7 @@ const Core = (() => {
     s.userStations = s.userStations || []; s.stationPrices = s.stationPrices || {};
     if (!s.cons) s.cons = defaultCons();
     if (!s.cons.idle) s.cons.idle = { bat: 1 };
+    if (!s.batt) s.batt = defaultBatt();
     return s;
   }
 
@@ -143,13 +147,80 @@ const Core = (() => {
   // BATTERY: energy = state of charge % × usable capacity
   // =====================================================================
   const tank = (id) => S.tanks.find((t) => t.id === id) || S.tanks[0];
-  function litres(tk, pct) { const t = typeof tk === 'string' ? tank(tk) : tk; return isFinite(pct) ? (t.capacity * pct) / 100 : NaN; }
-  function unusableL(tk) { const t = typeof tk === 'string' ? tank(tk) : tk; return (t.capacity * (t.pipeMm || 0)) / 100; }   // below the lowest charge you allow
+  const shapeG = (u) => [u * u - u, u * u * u - u, u * u * u * u - u];   // zero at 0 % and at 100 %: they only bend the curve
+  function energyWith(b, cap, pct) {
+    if (!isFinite(pct)) return NaN;
+    const u = pct / 100, g = shapeG(u);
+    return cap * ((1 + b.scale) * u + b.c[0] * g[0] + b.c[1] * g[1] + b.c[2] * g[2]);
+  }
+  function litres(tk, pct) { const t = typeof tk === 'string' ? tank(tk) : tk; return energyWith((S.batt && S.batt.active) || defaultBatt().active, t.capacity, pct); }
+  function unusableL(tk) { const t = typeof tk === 'string' ? tank(tk) : tk; return Math.max(0, litres(t, t.pipeMm || 0)); }   // below the lowest charge you allow
+  // charge % that holds this energy (inverse of the curve in use)
+  function pctFor(kwh) {
+    if (!isFinite(kwh)) return NaN;
+    const t = S.tanks[0]; let lo = 0, hi = 100;
+    if (kwh <= litres(t, 0)) return 0; if (kwh >= litres(t, 100)) return 100 * kwh / Math.max(0.1, litres(t, 100));
+    for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (litres(t, m) < kwh) lo = m; else hi = m; }
+    return (lo + hi) / 2;
+  }
   const eventsFor = (tid) => S.events.filter((e) => e.tank === tid).sort((a, b) => a.t - b.t);
   function levelAfter(e) {
     if (e.type !== 'refuel') return litres(e.tank, e.mm);
     return litres(e.tank, isFinite(e.afterMm) ? e.afterMm : e.mm);
   }
+  // ---------- battery curve fit from charges: charger kWh × (1 − loss of the place) = energy after − energy before ----------
+  const chargeEvents = () => S.events.filter((e) => e.type === 'refuel' && e.pumped > 0 && isFinite(e.afterMm) && e.afterMm - e.mm >= 10);
+  const placeOf = (e) => (e.src && e.src.type === 'station' ? 'station' : 'home');
+  function chargeResiduals(b, cap) { return chargeEvents().map((e) => energyWith(b, cap, e.afterMm) - energyWith(b, cap, e.mm) - e.pumped * (1 - b.loss[placeOf(e)])); }
+  const rmsOf = (r) => (r.length ? Math.sqrt(r.reduce((t, x) => t + x * x, 0) / r.length) : NaN);
+  function battMonotonic(b) { let prev = -Infinity; for (let p = 0; p <= 100; p += 2) { const v = energyWith(b, 1, p); if (v < prev - 1e-9) return false; prev = v; } return true; }
+  function fitBattery() {
+    const ev = chargeEvents(), cap = S.tanks[0].capacity;
+    if (ev.length < 3) return null;
+    // unknowns: scale, c1, c2, c3, loss home, loss station
+    const N = 6, H = Array.from({ length: N }, () => new Array(N).fill(0)), g = new Array(N).fill(0);
+    const add = (a, y, sd) => { const w = 1 / (sd * sd); for (let i = 0; i < N; i++) { if (!a[i]) continue; g[i] += w * a[i] * y; for (let j = 0; j < N; j++) H[i][j] += w * a[i] * a[j]; } };
+    ev.forEach((e) => {
+      const ua = e.afterMm / 100, ub = e.mm / 100, ga = shapeG(ua), gb = shapeG(ub), pl = placeOf(e);
+      const a = [cap * (ua - ub), cap * (ga[0] - gb[0]), cap * (ga[1] - gb[1]), cap * (ga[2] - gb[2]), pl === 'home' ? e.pumped : 0, pl === 'station' ? e.pumped : 0];
+      const sd = Math.sqrt((0.007 * cap) ** 2 + (0.01 * e.pumped) ** 2) * (e.rough ? 3 : 1);
+      add(a, e.pumped - cap * (ua - ub), sd);
+    });
+    const prior = [[0, 0.05], [0, 0.06], [0, 0.06], [0, 0.06], [0.10, 0.05], [0.05, 0.03]];
+    prior.forEach(([m, sd], i) => { H[i][i] += 1 / (sd * sd); g[i] += m / (sd * sd); });
+    const x = solve(H, g).x;
+    const b = { scale: x[0], c: [x[1], x[2], x[3]], loss: { home: clamp(x[4], 0, 0.3), station: clamp(x[5], 0, 0.3) } };
+    return { t: Date.now(), b, n: ev.length, monotonic: battMonotonic(b), errBefore: rmsOf(chargeResiduals(S.batt.active, cap)), errAfter: rmsOf(chargeResiduals(b, cap)),
+      nHome: ev.filter((e) => placeOf(e) === 'home').length, nStation: ev.filter((e) => placeOf(e) === 'station').length };
+  }
+  function battChange(a, b) {
+    const cap = S.tanks[0].capacity; let shift = 0;
+    for (let p = 0; p <= 100; p += 5) shift = Math.max(shift, Math.abs(energyWith(a, cap, p) - energyWith(b, cap, p)));
+    return { shift, loss: Math.max(Math.abs(a.loss.home - b.loss.home), Math.abs(a.loss.station - b.loss.station)) };
+  }
+  function proposeBattery() {
+    const B = S.batt, f = fitBattery();
+    let pending = null;
+    if (f && f.monotonic) {
+      const ch = battChange(B.active, f.b), rj = B.rejected ? battChange(B.rejected, f.b) : null;
+      if ((ch.shift > 0.5 || ch.loss > 0.01) && !(rj && rj.shift < 0.1 && rj.loss < 0.002)) pending = { ...f, shift: ch.shift };
+    }
+    B.pending = pending; return pending;
+  }
+  const battSnapshot = (note) => { const B = S.batt; B.history.unshift({ t: Date.now(), note, b: JSON.parse(JSON.stringify(B.active)), cap: S.tanks[0].capacity }); B.history = B.history.slice(0, 10); };
+  function acceptBattery() { const B = S.batt; if (!B.pending) return false; battSnapshot('before accepting a proposal'); B.active = B.pending.b; B.pending = null; B.rejected = null; refit(); proposeBattery(); save(); return true; }
+  function rejectBattery() { const B = S.batt; if (B.pending) B.rejected = B.pending.b; B.pending = null; save(); }
+  function restoreBattery(i) {
+    const B = S.batt, h = B.history[i]; if (!h) return;
+    battSnapshot('before restoring an earlier curve'); B.active = h.b; B.history.splice(i + 1, 1); B.rejected = null; refit(); proposeBattery(); save();
+  }
+  // new manufacturer capacity: the curve starts again from a straight line; losses are kept
+  function setCapacity(cap) {
+    const B = S.batt;
+    if (Math.abs(cap - S.tanks[0].capacity) > 1e-9) { battSnapshot('before a new capacity'); B.active = { scale: 0, c: [0, 0, 0], loss: { ...B.active.loss } }; B.rejected = null; }
+    S.tanks[0].capacity = cap; refit(); proposeBattery(); save();
+  }
+  const energyAt = (b, pct) => energyWith(b, S.tanks[0].capacity, pct);
   // charging losses: energy from the charger vs energy into the battery (charge % change × capacity)
   function chargeStats() {
     let fromCharger = 0, intoBattery = 0, n = 0;
@@ -530,7 +601,7 @@ const Core = (() => {
     const tt = t || Date.now(), group = rows.length > 1 ? uid() : null;
     rows.forEach((r) => logAccuracy(r.tank, r.beforeMm, tt, rough));
     rows.forEach((r) => S.events.push({ id: uid(), t: tt, type: 'refuel', tank: r.tank, mm: r.beforeMm, pumped: r.pumped, afterMm: r.afterMm, brim: !!r.brim, rough: !!rough, group, price, src: src || null }));
-    refit(); save(); return null;
+    refit(); const p = proposeBattery(); save(); return p;
   }
   function addStationPrice(id, price, src, litres, t) {
     S.stationPrices = S.stationPrices || {};
@@ -599,7 +670,7 @@ const Core = (() => {
     S.events.forEach((e) => ys.add(new Date(e.t).getFullYear()));
     return [...ys].sort((a, b) => b - a);
   }
-  function deleteEvent(id) { S.events = S.events.filter((e) => e.id !== id); refit(); save(); }
+  function deleteEvent(id) { S.events = S.events.filter((e) => e.id !== id); refit(); proposeBattery(); save(); }
   // =====================================================================
   // GPS trip tracking
   // =====================================================================
@@ -766,7 +837,7 @@ const Core = (() => {
   return {
     NB, MAX_KN, ENG, MODES, bandOf, bandMid, bandLabel, num, haversine, uid, polyEval, median, tripBands,
     init, get state() { return S; }, save, saveNow, live, on: (f) => listeners.add(f),
-    tank, litres, unusableL, chargeStats, levelNow, usable, eventsFor, levelAfter, intervals, refit,
+    tank, litres, unusableL, chargeStats, levelNow, pctFor, energyAt, fitBattery, proposeBattery, acceptBattery, rejectBattery, restoreBattery, setCapacity, usable, eventsFor, levelAfter, intervals, refit,
     lphEng, lphTotal, lpnm, lphSigma, lpnmSigma, lphX, baseLph, consSuggestions, cfEval, acceptCons, rejectCons, setConsBase, setConsIdle, floorOf, restoreCons, addConsPoint, updateConsPoint, deleteConsPoint, findConsPoint, economy, range, tripFuel, tripFuelTotal, tripMeasured,
     addDip, addRefuel, deleteEvent, dipKind, needsPreDip, summary, seasons,
     startTrip, stopTrip, startIdle, stopIdle, idleNow, addIdle, updateIdle, setPaused, setMode, setRpm, resumeIfActive, activeTrack, trackGet, deleteTrip,

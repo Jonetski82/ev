@@ -629,7 +629,36 @@ const I18N = (() => {
     "Levels and consumption are recalculated without it.": "Tasot ja kulutus lasketaan uudelleen ilman sitä.",
     "≈ {n} L": "≈ {n} L",
     "≈ {n} kWh": "≈ {n} kWh",
-    "Idle": "Tyhjäkäynti"
+    "Idle": "Tyhjäkäynti",
+    // ---- battery curve ----
+    "Battery curve": "Akkukäyrä",
+    "{n} charges used": "{n} latausta käytössä",
+    "1 charges used": "1 lataus käytössä",
+    "grey dashed = manufacturer capacity, straight": "harmaa katkoviiva = valmistajan kapasiteetti, suora",
+    "solid = curve in use": "yhtenäinen = käytössä oleva käyrä",
+    "black ticks = charges (before → after, charger energy minus loss)": "mustat merkit = lataukset (ennen → jälkeen, laturin energia miinus häviö)",
+    "in use": "käytössä",
+    "Learned from charges of at least {n} % with the charger kWh, together with the battery curve. The manufacturer capacity (±{n} %) sets the level.": "Opittu vähintään {n} %:n latauksista, joissa on laturin kWh, yhdessä akkukäyrän kanssa. Valmistajan kapasiteetti (±{n} %) määrää tason.",
+    "Learned from charges of at least {n} % with the charger kWh, together with the battery curve.": "Opittu vähintään {n} %:n latauksista, joissa on laturin kWh, yhdessä akkukäyrän kanssa.",
+    "The manufacturer capacity (±{n} %) sets the level.": "Valmistajan kapasiteetti (±{n} %) määrää tason.",
+    "Energy against charge": "Energia varauksen mukaan",
+    "Improved battery curve available": "Parannettu akkukäyrä saatavilla",
+    "From {n} charges · error {n} → {n} kWh": "{n} latauksesta · virhe {n} → {n} kWh",
+    "From {n} charges": "{n} latauksesta",
+    "Improved battery curve": "Parannettu akkukäyrä",
+    "Fitted to {n} charges. Nothing changes until you accept it.": "Sovitettu {n} lataukseen. Mikään ei muutu ennen kuin hyväksyt sen.",
+    "Fitted to {n} charges.": "Sovitettu {n} lataukseen.",
+    "Error vs charges": "Virhe latauksiin",
+    "Energy {n}–{n} %": "Energia {n}–{n} %",
+    "Loss, home": "Häviö, koti",
+    "Loss, charging station": "Häviö, latausasema",
+    "grey dashed = manufacturer capacity": "harmaa katkoviiva = valmistajan kapasiteetti",
+    "Earlier battery curves": "Aiemmat akkukäyrät",
+    "New battery curve in use": "Uusi akkukäyrä käytössä",
+    "Charging saved — improved battery curve available on the Battery page": "Lataus tallennettu — parannettu akkukäyrä saatavilla Akku-sivulla",
+    "before a new capacity": "ennen uutta kapasiteettia",
+    "before restoring an earlier curve": "ennen aiemman käyrän palautusta",
+    "{n} %": "{n} %"
   };
 
   // name-carrying texts (tank / station names stay as they are)

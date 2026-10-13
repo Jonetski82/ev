@@ -19,7 +19,9 @@
   const tstr = (t) => new Date(t).toLocaleTimeString(I18N.locale, { hour: '2-digit', minute: '2-digit' });
   const S = () => Core.state;
   const BAT = () => S().tanks[0];
-  const pctOf = (kwh) => (kwh / BAT().capacity) * 100;
+  const pctOf = (kwh) => Core.pctFor(kwh);   // charge % from the battery curve in use
+  // predicted charge % now, shown light grey in the input until a value is typed
+  const predPct = () => { const lv = Core.levelNow('bat'); return lv.known && isFinite(lv.L) ? fi(Core.pctFor(lv.L)) : ''; };
   const p2 = (n) => String(n).padStart(2, '0');
   const localInput = (t) => { const d = new Date(t); return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + 'T' + p2(d.getHours()) + ':' + p2(d.getMinutes()); };
   // an untouched date field means "now" to the second, so entries made within the same minute keep their order
@@ -184,7 +186,7 @@
     set('h-sog', fi(kmh)); set('h-sogavg', 'avg ' + fi(lv.sogAvg) + ' km/h');
     set('h-lpnm', kmh >= 3 ? per100(Core.lpnm('both', kmh)) : '–');
     set('h-lpnm-h', kmh >= 3 ? '±' + per100(Core.lpnmSigma('both', kmh)) : 'under 3 km/h');
-    if (A) { set('h-dist', f(A.distNm)); const u = Core.tripFuelTotal(A); set('h-used', f(u)); set('h-used-split', fi(pctOf(u)) + ' % of the battery'); }
+    if (A) { set('h-dist', f(A.distNm)); const u = Core.tripFuelTotal(A); set('h-used', f(u)); set('h-used-split', fi((u / BAT().capacity) * 100) + ' % of the battery'); }
     $('#helm-sub').textContent = A ? 'Drive ' + clock(Date.now() - A.start) + (A.paused ? ' · paused' : '') : 'Ready — start a drive to log it';
     $('#helm-pill').innerHTML = A ? (A.paused ? '<span class="dot"></span>Paused' : '<span class="dot rec"></span>Recording') : (lv.fix ? '<span class="dot"></span>GPS ' + fi(lv.acc) + ' m' : '<span class="dot"></span>GPS idle');
     const e = Core.economy();
@@ -236,7 +238,7 @@
   // charge-reading input, shared by end of drive and before a drive
   const readingCard = (title) => `<div class="card"><div class="cardhead"><div class="h">${title}</div></div>
       <div class="field"><label for="dip-bat" style="font-weight:600">Charge</label>
-        <div class="inbox"><input id="dip-bat" inputmode="decimal" data-dip="bat"><span>%</span></div>
+        <div class="inbox"><input id="dip-bat" inputmode="decimal" data-dip="bat" placeholder="${predPct()}"><span>%</span></div>
         <div style="flex:1;text-align:right"><div class="num" style="font-size:20px" id="dipL-bat">– kWh</div><div class="sub" id="dipU-bat"></div></div></div>
       ${roughBox('dip-rough')}
       <div id="dip-sum"></div></div>`;
@@ -428,6 +430,7 @@
       ${series.map((s) => (s.band ? `<path d="${s.band.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[2]).toFixed(1)).join(' ')} ${s.band.slice().reverse().map((p) => 'L' + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ')} Z" fill="${s.color}" opacity="0.16"/>` : '')).join('')}
       ${series.map((s) => (s.pts && s.pts.length ? `<path d="${path(s.pts)}" fill="none" stroke="${s.color}" stroke-width="${s.width || 2.5}" ${s.dash ? `stroke-dasharray="${s.dash}"` : ''} stroke-linejoin="round"/>` : '')).join('')}
       ${series.map((s) => (s.dots || []).map((d) => `<circle cx="${X(d[0]).toFixed(1)}" cy="${Y(d[1]).toFixed(1)}" r="${d[2] || 4}" fill="${s.dotFill || s.color}" stroke="${s.dotStroke || '#fff'}" stroke-width="1.5"/>`).join('')).join('')}
+      ${series.map((s) => (s.segs || []).map((g) => `<line x1="${X(g[0])}" y1="${Y(g[1])}" x2="${X(g[2])}" y2="${Y(g[3])}" stroke="${s.color}" stroke-width="1.5"/><circle cx="${X(g[2])}" cy="${Y(g[3])}" r="3.5" fill="#fff" stroke="${s.color}" stroke-width="1.5"/>`).join('')).join('')}
       ${trackId ? `<g class="trk" style="display:none"><line y1="${y1}" y2="${y0}" stroke="#B8470F" stroke-width="1.5"/><circle r="5" fill="#B8470F" stroke="#fff" stroke-width="2"/></g>` : ''}
     </svg>`;
   }
@@ -621,21 +624,63 @@
 
   // BATTERY
   R.tanks = () => {
-    const t = BAT(), u = Core.usable('bat'), lv = Core.levelNow('bat'), cs = Core.chargeStats();
+    const t = BAT(), u = Core.usable('bat'), lv = Core.levelNow('bat'), B = S().batt.active, ch = chargeList();
+    const cs = { n: ch.length, home: ch.filter((e) => !(e.src && e.src.type === 'station')).length, station: ch.filter((e) => e.src && e.src.type === 'station').length };
     $('#v-tanks').innerHTML = `
       <div class="top"><div><div class="title">Battery</div><div class="sub">Charge % → kWh</div></div><button class="btn small" data-act="edit-tank">Edit battery</button></div>
       <div class="grid3">
         <div class="tile"><div class="lbl">Now, est.</div><div class="num mid">${lv.known ? fi(pctOf(u.L)) : '–'} <span class="unit">%</span></div><div class="hint">${lv.known ? 'reading ' + fi(lv.since.type === 'refuel' ? lv.since.afterMm : lv.since.mm) + ' % · ' + dstr(lv.since.t) : 'no reading'}</div></div>
-        <div class="tile dark"><div class="lbl">Energy</div><div class="num mid">${lv.known ? fi(u.L) : '–'} <span class="unit">kWh</span></div><div class="hint">of ${f(t.capacity)} kWh usable</div></div>
+        <div class="tile dark"><div class="lbl">Energy</div><div class="num mid">${lv.known ? fi(u.L) : '–'} <span class="unit">kWh</span></div><div class="hint">of ${f(Core.energyAt(B, 100))} kWh usable</div></div>
         <div class="tile"><div class="lbl">For range</div><div class="num mid">${lv.known ? fi(u.usable) : '–'} <span class="unit">kWh</span></div><div class="hint">above ${fi(t.pipeMm)} %</div></div>
       </div>
       ${lv.known ? `<div class="card" style="gap:6px">${batBar()}</div>` : ''}
       <div class="btnrow"><button class="btn dark grow" data-act="dip-sheet">Log charge</button><button class="btn primary" data-act="go" data-v="refuel">Log charging</button></div>
-      <div class="card"><div class="cardhead"><div class="h">Charging losses</div><div class="sub">${cs.n ? cs.n + ' charges' : 'no data yet'}</div></div>
-        ${cs.n ? `<div class="cardhead"><div class="num" style="font-size:28px">${f(cs.loss * 100)} %</div><div class="sub" style="text-align:right">${f(cs.fromCharger)} kWh from the charger<br>${f(cs.intoBattery)} kWh into the battery</div></div>` : ''}
-        <div class="sub">Energy from the charger compared with the charge % change × capacity. Charges of at least 10 % with the charger kWh count. A loss near 0 % or negative suggests the capacity is set too high.</div></div>
+      ${battProposalCard()}
+      <div class="card" style="padding:12px 6px 8px 2px"><div class="cardhead" style="padding-left:10px"><div class="h">Battery curve</div><div class="sub">${cs.n} charges used</div></div>
+        ${battChart()}
+        <div class="sub" style="padding-left:30px">grey dashed = manufacturer capacity, straight · solid = curve in use · black ticks = charges (before → after, charger energy minus loss)</div></div>
+      <div class="card" style="gap:6px"><div class="cardhead"><div class="h">Charging losses</div><div class="sub">in use</div></div>
+        <div class="table">
+          <div class="tr" style="grid-template-columns:2fr 1fr 1fr"><div>Home</div><div style="text-align:right"><b>${f(B.loss.home * 100)} %</b></div><div style="text-align:right" class="sub">${cs.home} charges</div></div>
+          <div class="tr" style="grid-template-columns:2fr 1fr 1fr"><div>Charging station</div><div style="text-align:right"><b>${f(B.loss.station * 100)} %</b></div><div style="text-align:right" class="sub">${cs.station} charges</div></div>
+        </div>
+        <div class="sub">Learned from charges of at least 10 % with the charger kWh, together with the battery curve. The manufacturer capacity (±5 %) sets the level.</div></div>
+      ${battHistoryCard()}
       <div class="btnrow"><button class="btn small grow" data-act="go" data-v="log">Charging log and readings</button></div>`;
   };
+  let battHistOpen = false;
+  const chargeList = () => S().events.filter((e) => e.type === 'refuel' && e.pumped > 0 && isFinite(e.afterMm) && e.afterMm - e.mm >= 10);
+  function battChart(prop) {
+    const t = BAT(), B = S().batt.active, cap = t.capacity, yMax = niceMax(cap * 1.12);
+    const curve = (b) => Array.from({ length: 51 }, (_, i) => [i * 2, Core.energyAt(b, i * 2)]);
+    const series = [{ pts: [[0, 0], [100, cap]], color: '#9AA5AE', width: 1.5, dash: '5 4' }, { pts: curve(B), color: t.color }];
+    if (prop) series.push({ pts: curve(prop), color: '#E07A2E', width: 2.5, dash: '7 4' });
+    else series.push({ color: '#13212F', segs: chargeList().map((e) => { const b0 = Core.energyAt(B, e.mm), pl = e.src && e.src.type === 'station' ? 'station' : 'home'; return [e.mm, b0, e.afterMm, b0 + e.pumped * (1 - B.loss[pl])]; }) });
+    return lineChart(series, { track: { step: 1, y: (p) => Core.energyAt(B, p), tip: (p) => `${fi(p)} % · ${f(Core.energyAt(B, p))} kWh` },
+      label: 'Energy against charge', xMin: 0, xMax: 100, yMin: 0, yMax, xTicks: [0, 25, 50, 75, 100], yTicks: ticks(yMax), xFmt: (v) => v, yFmt: (v) => fi(v), xUnit: '%' });
+  }
+  function battProposalCard() {
+    const p = S().batt.pending; if (!p) return '';
+    return `<div class="card dark"><div class="cardhead"><div><div class="h">Improved battery curve available</div><div class="sub">From ${p.n} charges · error ${f(p.errBefore)} → ${f(p.errAfter)} kWh</div></div><button class="btn small" style="background:#fff;color:#13212F" data-act="batt-review">Review</button></div></div>`;
+  }
+  function battProposalSheet() {
+    const P = S().batt.pending; if (!P) return;
+    const A = S().batt.active, row = (label, a, b) => `<div class="tr" style="grid-template-columns:2fr 1fr 1fr"><div>${label}</div><div style="text-align:right">${a}</div><div style="text-align:right"><b>${b}</b></div></div>`;
+    sheet(`<h3>Improved battery curve</h3><p>Fitted to ${P.n} charges. Nothing changes until you accept it.</p>
+      <div class="card" style="gap:6px"><div class="cardhead"><div class="sub">Error vs charges</div><div class="num" style="font-size:20px">${f(P.errBefore)} → ${f(P.errAfter)} kWh</div></div>
+        <div class="table"><div class="tr head" style="grid-template-columns:2fr 1fr 1fr"><div></div><div style="text-align:right">Now</div><div style="text-align:right">New</div></div>
+        ${row('Energy 0–100 %', f(Core.energyAt(A, 100)) + ' kWh', f(Core.energyAt(P.b, 100)) + ' kWh')}
+        ${row('Energy 20–80 %', f(Core.energyAt(A, 80) - Core.energyAt(A, 20)) + ' kWh', f(Core.energyAt(P.b, 80) - Core.energyAt(P.b, 20)) + ' kWh')}
+        ${row('Loss, home', f(A.loss.home * 100) + ' %', f(P.b.loss.home * 100) + ' %')}
+        ${row('Loss, charging station', f(A.loss.station * 100) + ' %', f(P.b.loss.station * 100) + ' %')}</div>
+      </div>
+      <div class="card" style="padding:8px 4px 4px 0"><div class="sub" style="padding-left:12px">solid = current · orange dashed = proposed · grey dashed = manufacturer capacity</div>${battChart(P.b)}</div>
+      <div class="btnrow"><button class="btn grow" data-act="batt-reject">Keep current</button><button class="btn primary" data-act="batt-accept">Use new curve</button></div>`);
+  }
+  function battHistoryCard() {
+    const h = S().batt.history; if (!h.length) return '';
+    return `<div class="card" style="gap:0"><button class="cardhead fold" data-act="batt-hist"><span class="h">Earlier battery curves</span><span class="sub">${battHistOpen ? 'Hide' : 'Show ' + h.length}</span></button>${battHistOpen ? h.map((x, i) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #ECE8DC;gap:8px"><span class="sub">${dtstr(x.t)} · ${esc(x.note || '')} · ${f(x.cap * (1 + x.b.scale))} kWh</span><button class="btn small" data-act="batt-restore" data-i="${i}">Restore</button></div>`).join('') : ''}</div>`;
+  }
 
   // CHARGING
   let refuelSrc = 'home', refuelStName = '';
@@ -651,7 +696,7 @@
     $('#v-refuel').innerHTML = `
       <div class="top back"><button class="iconbtn" aria-label="Back" data-act="go" data-v="${backOf.refuel || 'tanks'}">${IC.back}</button><div><div class="title">Log charging</div><div class="sub">Charge before and after, energy and price</div></div></div>
       <div class="card">
-        <div class="field"><label for="rb">Charge before<small id="rbL">from the car</small></label><div class="inbox"><input id="rb" inputmode="decimal" data-rf="1"><span>%</span></div></div>
+        <div class="field"><label for="rb">Charge before<small id="rbL">from the car</small></label><div class="inbox"><input id="rb" inputmode="decimal" data-rf="1" placeholder="${predPct()}"><span>%</span></div></div>
         <div class="field"><label for="ra">Charge after<small id="raL">from the car</small></label><div class="inbox"><input id="ra" inputmode="decimal" data-rf="1"><span>%</span></div></div>
         <div class="field"><label for="rp">Energy from the charger<small>from the charger or the app; optional</small></label><div class="inbox"><input id="rp" inputmode="decimal" data-rf="1"><span>kWh</span></div></div>
         ${roughBox('rf-rough')}
@@ -834,7 +879,7 @@
         <div class="btnrow" style="padding:0"><button class="btn small grow" data-act="export">Export backup</button><label class="btn small grow" for="importf">Import backup</label><input type="file" id="importf" accept="application/json,.json" style="display:none" data-act="import"></div>
       </div>
       <div class="btnrow"><button class="btn small grow" data-act="check-update">Check for app update</button></div>
-      <div class="note">EV log 1.2 — test version of the Popcorn Fuel Log · Charging stations © OpenStreetMap contributors · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
+      <div class="note">EV log 1.3 — test version of the Popcorn Fuel Log · Charging stations © OpenStreetMap contributors · Wind data © Finnish Meteorological Institute (CC BY 4.0) · map © OpenStreetMap contributors, background map © Maanmittauslaitos.</div>`;
   };
 
   function loadSheet() {
@@ -940,12 +985,17 @@
     'cons-reject': () => { Core.rejectCons(); closeSheet(); toast('Kept the current curve'); R.curve(); },
     'cons-hist': () => { consHistOpen = !consHistOpen; R.curve(); },
     'cons-restore': (el) => confirmSheet('Restore this curve?', 'The current curve is kept in the list so you can switch back.', 'Restore', () => { Core.restoreCons(+el.dataset.i); R.curve(); }),
+    'batt-review': () => battProposalSheet(),
+    'batt-accept': () => { if (Core.acceptBattery()) toast('New battery curve in use'); closeSheet(); R.tanks(); },
+    'batt-reject': () => { Core.rejectBattery(); closeSheet(); toast('Kept the current curve'); R.tanks(); },
+    'batt-hist': () => { battHistOpen = !battHistOpen; R.tanks(); },
+    'batt-restore': (el) => confirmSheet('Restore this curve?', 'The current curve is kept in the list so you can switch back.', 'Restore', () => { Core.restoreBattery(+el.dataset.i); R.tanks(); }),
     'metric': (el) => { curveMetric = el.dataset.m; R.curve(); },
     'dip-sheet': () => {
       const lastEnd = S().trips.reduce((m, tr) => Math.max(m, tr.end || 0), 0);
       dipKindSel = Date.now() - lastEnd < 6 * 3600000 && Core.needsPreDip() ? 'after' : 'check';
       sheet(`<h3>Log charge</h3><p>Charge % from the car's display.</p>
-        <div class="card"><div class="field"><label for="sd-bat" style="font-weight:600">Charge<small id="sdL-bat"> </small></label><div class="inbox"><input id="sd-bat" inputmode="decimal" data-sdip="bat"><span>%</span></div></div>
+        <div class="card"><div class="field"><label for="sd-bat" style="font-weight:600">Charge<small id="sdL-bat"> </small></label><div class="inbox"><input id="sd-bat" inputmode="decimal" data-sdip="bat" placeholder="${predPct()}"><span>%</span></div></div>
         ${roughBox('sd-rough')}
         <div class="seg" style="margin:0">${[['after', 'After drive'], ['before', 'Before drive'], ['check', 'Separate']].map(([k, l]) => `<button class="${dipKindSel === k ? 'on' : ''}" data-act="sd-kind" data-k="${k}">${l}</button>`).join('')}</div>
         ${whenField('sd-when')}</div>
@@ -974,7 +1024,7 @@
       const t = BAT(), cap = Core.num($('#et-cap').value), mn = Core.num($('#et-min').value);
       if (!(cap >= 5 && cap <= 250)) return toast('Enter the capacity in kWh (5–250)');
       if (!(mn >= 0 && mn <= 50)) return toast('Enter the lowest charge in % (0–50)');
-      t.capacity = cap; t.pipeMm = mn; Core.refit(); Core.save(); closeSheet(); toast('Battery saved'); R.tanks();
+      t.pipeMm = mn; Core.setCapacity(cap); closeSheet(); toast('Battery saved'); R.tanks();
     },
     'del-event': (el) => confirmSheet('Delete this entry?', 'Battery level and consumption are recalculated without it.', 'Delete', () => { Core.deleteEvent(el.dataset.id); (R[current] || R.tanks)(); }),
     'log-all': (el) => { logAll[el.dataset.k] = !logAll[el.dataset.k]; R.log(); },
@@ -991,14 +1041,14 @@
       if (!c.ok) return toast('Enter the charge before and after (after must be higher)');
       const stName = refuelSrc === 'station' && $('#rst') ? $('#rst').value.trim() : '';
       const tw = readWhen('rwhen'); if (tw > Date.now() + 300000) return toast('The time is in the future');
-      Core.addRefuel([{ tank: 'bat', beforeMm: c.b, pumped: isFinite(c.kwh) ? c.kwh : 0, afterMm: c.a, brim: false }], c.price, $('#rf-rough').checked, tw, { type: refuelSrc, name: stName });
+      const bp = Core.addRefuel([{ tank: 'bat', beforeMm: c.b, pumped: isFinite(c.kwh) ? c.kwh : 0, afterMm: c.a, brim: false }], c.price, $('#rf-rough').checked, tw, { type: refuelSrc, name: stName });
       refuelStName = stName;
       if (isFinite(c.price)) {
         S().settings[refuelSrc === 'home' ? 'homePrice' : 'price'] = String(c.price); Core.save();
         const st = stName && allStations().find((x) => x.name.toLowerCase() === stName.toLowerCase());
         if (st) Core.addStationPrice(st.id, c.price, 'refuel', c.kwh, tw);
       }
-      go(backOf.refuel || 'tanks'); toast('Charging saved');
+      go(backOf.refuel || 'tanks'); toast(bp ? 'Charging saved — improved battery curve available on the Battery page' : 'Charging saved', bp ? 4000 : 2800);
     },
     'range-mode': (el) => { rangeMode = el.dataset.m; renderRange(); },
     'range-speed': (el) => { rangeSpeed = el.dataset.s; renderRange(); },
@@ -1071,7 +1121,7 @@
     if (act === 'setbat') {
       const v = Core.num(el.value), k = el.dataset.k, t = BAT();
       const ok = { capacity: v >= 5 && v <= 250, pipeMm: v >= 0 && v <= 50 }[k];
-      if (ok) { t[k] = v; Core.refit(); Core.save(); toast('Saved'); } else { toast('Value out of range'); el.value = dv(t[k]); }
+      if (ok) { if (k === 'capacity') Core.setCapacity(v); else { t[k] = v; Core.refit(); Core.save(); } toast('Saved'); } else { toast('Value out of range'); el.value = dv(t[k]); }
     }
     if (act === 'import' && el.files[0]) {
       try { await Core.importAll(JSON.parse(await el.files[0].text())); toast('Backup imported'); go('helm'); }
@@ -1097,5 +1147,5 @@
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded && !(S() && S().active)) { reloaded = true; location.reload(); } });
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => reg.update()).catch(() => {}));
   }
-  window.FuelLogDebug = { go, Core, Wind, consProposalSheet, maps };
+  window.FuelLogDebug = { go, Core, Wind, consProposalSheet, battProposalSheet, maps };
 })();

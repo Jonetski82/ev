@@ -1,4 +1,4 @@
-# EV-loki (testiversio, versio 1.2)
+# EV-loki (testiversio, versio 1.3)
 
 Sähköauton ajo-, lataus- ja kantamaloki. Popcorn Fuel Login (veneversio 5.2) testiversio: sama kulutusmalli, GPS-kirjaus, arviopisteet ja ehdotusten hyväksyntä, mutta yksiköt ovat km/h, km ja kWh/100 km ja kahden tankin tilalla on yksi akku (varaus %).
 
@@ -24,3 +24,7 @@ Veneversio ja EV-loki voivat olla samassa puhelimessa: niillä on omat tietokann
 
 ## Versio 1.2
 - Seuranta sormella kulutuskuvaajissa: nopeus · kulutus ± epävarmuus · kantama.
+
+## Versio 1.3 – akkukäyrä
+- Akku-sivulla akkukäyrä (varaus % → kWh) kuten veneen tankkikäyrä: valmistajan kapasiteetti pohjana (±5 %), muoto ja lataushäviöt (koti / latausasema) opitaan latauksista. Uusi käyrä ehdotuksena; aiemmat käyrät palautettavissa.
+- Varauskentissä näkyy vaaleanharmaana ennustettu varaus %.
